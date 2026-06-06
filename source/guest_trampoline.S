@@ -5,7 +5,9 @@
  *                                   guest_text_start, guest_text_size }
  *
  * Invalidates the guest's text region from I-cache, sets stack,
- * and branches to the guest entry point. Never returns.
+ * and branches to the guest entry point.  Uses bctrl so the guest
+ * can return via blr — control goes back to core1_process_engine's
+ * polling loop, and wait[] entry is cleared for the next command.
  */
 
 .section .text, "ax"
@@ -31,6 +33,7 @@ core1_guest_entry:
 
 2:  isync
 
-    /* Jump to guest */
+    /* Call guest (bctrl saves return address in LR).
+     * Guest returns via blr -> back to core1_engine polling loop. */
     mtctr   %r12
-    bctr
+    bctrl
