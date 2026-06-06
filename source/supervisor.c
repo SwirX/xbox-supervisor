@@ -1,18 +1,3 @@
-/* Xbox 360 Supervisor — Ring 0 kernel.
- *
- * Built as a standard libxenon app. Core 0 runs main() with full GPU and
- * console output. Core 1 is booted by libxenon's CRT and spins on the
- * wait[] table — we write a function pointer there to launch the engine.
- *
- * Memory:
- *   0x80000000 - 0x807FFFFF   Supervisor code/data/stack (8 MB)
- *   0x807FF000 - 0x807FFFFF   IPC shared memory
- *   0x80800000 onwards         Guest app space (loaded ELFs)
- *
- * PIR values on Xbox 360: 0 (primary), 1 (secondary).
- * wait[2] = func ptr, wait[3] = stack ptr for Core 1.
- */
-
 #include <stdio.h>
 #include <string.h>
 #include <xenos/xenos.h>
@@ -24,17 +9,12 @@
 #include "barrier.h"
 #include "elf_format.h"
 
-/* libxenon's Core 1 dispatch table — defined in crt1.o / startup_from_xell.S */
 extern volatile uint32_t wait[];
-
-/* Core 1's polling engine (defined in core1_engine.c) */
 extern void core1_process_engine(void);
-
-/* ELF loader: parse embedded guest, load to VMA, fill ElfExecPayload */
 extern int load_embedded_guest_elf(ElfExecPayload *out_payload);
 
-/* Core 1 stack: within supervisor's 8 MB region */
-#define CORE1_STACK_TOP        0x807E0000UL
+#define CORE1_STACK_TOP  0x807E0000UL
+#define PIR_SPR          1023
 
 static void boot_core1(void)
 {
@@ -86,11 +66,9 @@ static void launch_guest(void)
     printf("        text_start=0x%08X  text_size=%u\n",
            payload.guest_text_start, payload.guest_text_size);
 
-    /* Clear the supervisor_status flag so we can detect guest writeback */
     IPC_FLAGS_ADDR->out.supervisor_status = 0;
     cache_flush_range(&IPC_FLAGS_ADDR->out.supervisor_status, sizeof(uint32_t));
 
-    /* Send CMD_EXEC_GUEST to Core 1 via IPC command ring */
     IpcPacket cmd;
     memset(&cmd, 0, sizeof(cmd));
     cmd.cmd_type    = CMD_EXEC_GUEST;
@@ -100,7 +78,6 @@ static void launch_guest(void)
     while (!ipc_ring_push((IpcRingBuffer *)IPC_CMD_RING_ADDR, &cmd));
     printf("[GUEST] CMD_EXEC_GUEST sent to Core 1\n");
 
-    /* Wait for guest to write magic value back to supervisor_status */
     uint32_t magic;
     uint32_t timeout = 2000000;
     do {
@@ -119,7 +96,6 @@ void main(void)
 {
     struct XenosDevice xe;
 
-    /* ---- GPU / display init ---- */
     xenos_init(VIDEO_MODE_AUTO);
     Xe_Init(&xe);
     edram_init(&xe);
@@ -128,23 +104,19 @@ void main(void)
 
     printf("XBOX SUPERVISOR v0.1\n");
     printf("====================\n");
-    printf("Ring 0 — libxenon based\n\n");
+    printf("Ring 0 libxenon based\n\n");
 
     uint32_t pir;
-    __asm__ volatile("mfspr %0, 0x01B" : "=r"(pir));
+    __asm__ volatile("mfspr %0, %1" : "=r"(pir) : "i"(PIR_SPR));
     printf("[BOOT] Core 0 running, PIR=%u\n", pir);
 
-    /* ---- Shared memory init ---- */
     supervisor_early_init();
     printf("[BOOT] IPC shared memory @ 0x%08X\n", (uint32_t)IPC_SHMEM_BASE);
 
-    /* ---- Boot Core 1 via libxenon wait[] ---- */
     boot_core1();
 
-    /* ---- Launch test guest on Core 1 ---- */
     launch_guest();
 
-    /* ---- Main loop ---- */
     printf("\n[SUPV] Entering main loop\n");
     printf("       CMD_RING @ 0x%08X\n", (uint32_t)(uintptr_t)IPC_CMD_RING_ADDR);
     printf("       RES_RING @ 0x%08X\n", (uint32_t)(uintptr_t)IPC_RES_RING_ADDR);
