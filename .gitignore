@@ -1,2 +1,17 @@
-*.o *.elf *.elf32 *.map xenon.elf
+*.o
+*.elf
+*.elf32
+*.map
+xenon.elf
 build/
+# Old self-contained supervisor files — not compiled in libxenon build
+source/bootstrap.c
+source/shmem.c
+source/stubs.c
+source/uart.c
+source/vectors.S
+test_guest.S
+test_screen.c
+test_guest.lds
+guest_application.elf
+guest_application.o
