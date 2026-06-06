@@ -1,0 +1,2 @@
+*.o *.elf *.elf32 *.map xenon.elf
+build/
