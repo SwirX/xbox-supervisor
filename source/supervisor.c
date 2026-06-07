@@ -4,6 +4,8 @@
 #include <xenos/xe.h>
 #include <xenos/edram.h>
 #include <console/console.h>
+#include <usb/usbmain.h>
+#include <input/input.h>
 #include "system_memory_map.h"
 #include "ipc_ring.h"
 #include "barrier.h"
@@ -15,6 +17,7 @@ extern int load_embedded_guest_elf(ElfExecPayload *out_payload);
 
 #define CORE1_STACK_TOP  0x807E0000UL
 #define PIR_SPR          1023
+#define NUM_CONTROLLERS  4
 
 static void boot_core1(void)
 {
@@ -117,12 +120,18 @@ void main(void)
 
     launch_guest();
 
-    printf("\n[SUPV] Entering main loop\n");
+    printf("\n[INIT] Starting USB...\n");
+    int usb_ok = usb_init();
+    printf("[INIT] USB init: %s\n\n", usb_ok == 0 ? "OK" : "FAILED");
+
+    printf("[SUPV] Entering main loop\n");
     printf("       CMD_RING @ 0x%08X\n", (uint32_t)(uintptr_t)IPC_CMD_RING_ADDR);
     printf("       RES_RING @ 0x%08X\n", (uint32_t)(uintptr_t)IPC_RES_RING_ADDR);
     printf("       FLAGS    @ 0x%08X\n\n", (uint32_t)(uintptr_t)IPC_FLAGS_ADDR);
 
     uint32_t tick = 0;
+    int guide_prev[NUM_CONTROLLERS] = {0};
+
     while (1) {
         volatile IpcStateFlags *flags = IPC_FLAGS_ADDR;
         cache_inval_line(&flags->in.core1_heartbeat);
@@ -130,6 +139,20 @@ void main(void)
         if (flags->in.core1_heartbeat != tick) {
             tick = flags->in.core1_heartbeat;
             printf("[SUPV] Core 1 heartbeat: %u\n", tick);
+        }
+
+        usb_do_poll();
+
+        for (int port = 0; port < NUM_CONTROLLERS; port++) {
+            struct controller_data_s pad;
+            int connected = get_controller_data(&pad, port);
+
+            if (connected == 0) {
+                if (pad.logo && !guide_prev[port]) {
+                    printf("[INPUT] Guide button (port %d)\n", port);
+                }
+                guide_prev[port] = pad.logo;
+            }
         }
 
         __asm__ volatile("or 27, 27, 27");
