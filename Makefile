@@ -28,7 +28,7 @@ LDFLAGS += -L$(DEVKITXENON)/usr/lib
 LDFLAGS += -L$(DEVKITXENON)/xenon/lib/32
 LDFLAGS += -Tsupervisor.lds
 
-LIBS = -lxenon -lm
+LIBS = -lfat -lxenon -lm
 
 # Core supervisor sources
 SOURCES := \
@@ -43,7 +43,7 @@ ASM_SOURCES := \
 OBJS := $(SOURCES:.c=.o) $(ASM_SOURCES:.S=.o)
 
 # ── Test guest ──
-GUEST_VMA     = 0x80800000
+GUEST_VMA     = 0x81000000
 GUEST_TARGET  = test_guest
 GUEST_OBJ     = guest_application.o
 GUEST_ELF     = guest_application.elf

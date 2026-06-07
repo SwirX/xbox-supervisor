@@ -1,7 +1,9 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <cache.h>
 #include <time/time.h>
+#include <libfat/fat.h>
 #include <xenon_smc/xenon_smc.h>
 #include <xenos/xenos.h>
 #include <xenos/xe.h>
@@ -16,15 +18,17 @@
 
 extern volatile uint32_t wait[];
 extern void core1_process_engine(void);
-extern int load_embedded_guest_elf(ElfExecPayload *out_payload);
 
-#define CORE1_STACK_TOP  0x807E0000UL
-#define PIR_SPR          1023
-#define NUM_CONTROLLERS  4
-#define MENU_ITEMS       3
+#define CORE1_STACK_TOP   0x807E0000UL
+#define PIR_SPR           1023
+#define NUM_CONTROLLERS   4
+#define MENU_ITEMS        4
+#define GUEST_BASE        0x81000000UL
+#define CACHE_LINE_SIZE   128
 
 static const char *menu_labels[MENU_ITEMS] = {
     "Resume Game",
+    "Load from USB",
     "Settings",
     "Exit to XeLL"
 };
@@ -51,33 +55,6 @@ static void supervisor_early_init(void)
     IPC_FLAGS_ADDR->out.supervisor_status = STATE_INIT;
     IPC_FLAGS_ADDR->in.current_state      = STATE_INIT;
     cache_flush_range((void *)IPC_SHMEM_BASE, IPC_SHMEM_SIZE);
-}
-
-static void launch_guest(void)
-{
-    ElfExecPayload payload;
-    int ret = load_embedded_guest_elf(&payload);
-
-    if (ret < 0)
-        return;
-
-    IPC_FLAGS_ADDR->out.supervisor_status = 0;
-    cache_flush_range(&IPC_FLAGS_ADDR->out.supervisor_status, sizeof(uint32_t));
-
-    IpcPacket cmd;
-    memset(&cmd, 0, sizeof(cmd));
-    cmd.cmd_type    = CMD_EXEC_GUEST;
-    cmd.sequence_id = 0x0001;
-    memcpy(cmd.payload, &payload, sizeof(ElfExecPayload));
-
-    while (!ipc_ring_push((IpcRingBuffer *)IPC_CMD_RING_ADDR, &cmd));
-
-    uint32_t magic;
-    uint32_t timeout = 2000000;
-    do {
-        cache_inval_line(&IPC_FLAGS_ADDR->out.supervisor_status);
-        magic = IPC_FLAGS_ADDR->out.supervisor_status;
-    } while (magic == 0 && timeout--);
 }
 
 static void signal_pause(volatile IpcStateFlags *flags)
@@ -177,6 +154,132 @@ static int handle_menu_input(void)
     }
 }
 
+static int load_guest_from_usb(ElfExecPayload *out)
+{
+    FILE *f = fopen("uda:/payload.elf", "rb");
+    if (!f) {
+        printf("\n  No payload.elf on USB.\n");
+        return -1;
+    }
+
+    Elf32_Ehdr ehdr;
+    if (fread(&ehdr, 1, sizeof(ehdr), f) != sizeof(ehdr)) {
+        printf("\n  Bad ELF header.\n");
+        fclose(f);
+        return -1;
+    }
+
+    if (ehdr.e_ident[0] != ELFMAG0 || ehdr.e_ident[1] != ELFMAG1 ||
+        ehdr.e_ident[2] != ELFMAG2 || ehdr.e_ident[3] != ELFMAG3) {
+        printf("\n  Not an ELF file.\n");
+        fclose(f);
+        return -1;
+    }
+
+    if (ehdr.e_machine != EM_PPC) {
+        printf("\n  Not PowerPC ELF.\n");
+        fclose(f);
+        return -1;
+    }
+
+    printf("\n  Loading %s...\n", "payload.elf");
+
+    Elf32_Phdr *phdrs = malloc(ehdr.e_phnum * sizeof(Elf32_Phdr));
+    if (!phdrs) {
+        fclose(f);
+        return -1;
+    }
+
+    fseek(f, ehdr.e_phoff, SEEK_SET);
+    if (fread(phdrs, sizeof(Elf32_Phdr), ehdr.e_phnum, f) != ehdr.e_phnum) {
+        free(phdrs);
+        fclose(f);
+        return -1;
+    }
+
+    uint32_t first_text = 0;
+    uint32_t total_text = 0;
+
+    for (int i = 0; i < ehdr.e_phnum; i++) {
+        if (phdrs[i].p_type != PT_LOAD)
+            continue;
+
+        uint8_t *dest = (uint8_t *)phdrs[i].p_vaddr;
+
+        if (phdrs[i].p_flags & PF_X) {
+            if (first_text == 0)
+                first_text = phdrs[i].p_vaddr;
+            total_text += phdrs[i].p_memsz;
+        }
+
+        if (phdrs[i].p_filesz > 0) {
+            fseek(f, phdrs[i].p_offset, SEEK_SET);
+            if (fread(dest, 1, phdrs[i].p_filesz, f) != phdrs[i].p_filesz) {
+                free(phdrs);
+                fclose(f);
+                return -1;
+            }
+
+            uint32_t fs = phdrs[i].p_vaddr & ~(CACHE_LINE_SIZE - 1);
+            uint32_t fe = (phdrs[i].p_vaddr + phdrs[i].p_filesz + CACHE_LINE_SIZE - 1)
+                          & ~(CACHE_LINE_SIZE - 1);
+            for (uint32_t a = fs; a < fe; a += CACHE_LINE_SIZE)
+                __asm__ volatile("dcbst 0, %0" : : "r"(a) : "memory");
+        }
+
+        if (phdrs[i].p_memsz > phdrs[i].p_filesz) {
+            memset(dest + phdrs[i].p_filesz, 0, phdrs[i].p_memsz - phdrs[i].p_filesz);
+
+            uint32_t fs = (phdrs[i].p_vaddr + phdrs[i].p_filesz) & ~(CACHE_LINE_SIZE - 1);
+            uint32_t fe = (phdrs[i].p_vaddr + phdrs[i].p_memsz + CACHE_LINE_SIZE - 1)
+                          & ~(CACHE_LINE_SIZE - 1);
+            for (uint32_t a = fs; a < fe; a += CACHE_LINE_SIZE)
+                __asm__ volatile("dcbst 0, %0" : : "r"(a) : "memory");
+        }
+    }
+
+    __asm__ volatile("sync" : : : "memory");
+
+    free(phdrs);
+    fclose(f);
+
+    out->entry_point      = ehdr.e_entry;
+    out->stack_pointer    = 0x9E000000;
+    out->guest_text_start = first_text;
+    out->guest_text_size  = total_text;
+
+    return 0;
+}
+
+static void send_exec_guest(ElfExecPayload *payload)
+{
+    IPC_FLAGS_ADDR->out.supervisor_status = 0;
+    cache_flush_range(&IPC_FLAGS_ADDR->out.supervisor_status, sizeof(uint32_t));
+
+    IpcPacket cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.cmd_type    = CMD_EXEC_GUEST;
+    cmd.sequence_id = 0x0001;
+    memcpy(cmd.payload, payload, sizeof(ElfExecPayload));
+
+    while (!ipc_ring_push((IpcRingBuffer *)IPC_CMD_RING_ADDR, &cmd));
+
+    uint32_t magic;
+    uint32_t timeout = 2000000;
+    do {
+        cache_inval_line(&IPC_FLAGS_ADDR->out.supervisor_status);
+        magic = IPC_FLAGS_ADDR->out.supervisor_status;
+    } while (magic == 0 && timeout--);
+
+    if (magic == 0xDEADBEEF) {
+        printf("  Guest OK (0x%08X)\n", magic);
+    } else if (magic != 0) {
+        printf("  Guest resp 0x%08X\n", magic);
+    } else {
+        printf("  Guest timeout\n");
+    }
+}
+
 static void execute_exit_to_xell(void)
 {
     printf("\n  Returning to XeLL...\n");
@@ -199,15 +302,20 @@ void main(void)
 
     supervisor_early_init();
     boot_core1();
-    launch_guest();
 
     printf("\n[INIT] USB...\n");
     usb_init();
+    for (int i = 0; i < 50; i++) {
+        usb_do_poll();
+        udelay(10000);
+    }
+    fatInitDefault();
 
     printf("[SUPV] Ready. Press Guide for menu.\n");
 
     int menu_open = 0;
     int guide_prev[NUM_CONTROLLERS] = {0};
+    ElfExecPayload usb_payload;
 
     while (1) {
         volatile IpcStateFlags *flags = IPC_FLAGS_ADDR;
@@ -225,13 +333,15 @@ void main(void)
                         menu_open = 1;
                         int result = handle_menu_input();
 
-                        if (result >= 0) {
-                            if (result == 0) {
-                                /* Resume Game — just close menu */
-                            } else if (result == 2) {
-                                execute_exit_to_xell();
-                                /* unreachable */
+                        if (result == 0) {
+                            /* Resume Game */
+                        } else if (result == 1) {
+                            /* Load from USB */
+                            if (load_guest_from_usb(&usb_payload) == 0) {
+                                send_exec_guest(&usb_payload);
                             }
+                        } else if (result == 3) {
+                            execute_exit_to_xell();
                         }
 
                         signal_resume(flags);
