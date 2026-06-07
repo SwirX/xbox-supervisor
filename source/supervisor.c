@@ -255,7 +255,7 @@ static int load_guest_from_usb(ElfExecPayload *out)
     fclose(f);
 
     out->entry_point      = ehdr.e_entry;
-    out->stack_pointer    = 0x9E000000;
+    out->stack_pointer    = 0x8F000000;
     out->guest_text_start = first_text;
     out->guest_text_size  = total_text;
 

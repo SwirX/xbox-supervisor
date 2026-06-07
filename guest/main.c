@@ -2,8 +2,8 @@
 #include <svc_framebuffer.h>
 
 #define IPC_INPUT_GEN    ((volatile uint32_t *)0x807FFCFCUL)
-#define IPC_SHARED_PAD   ((volatile uint32_t *)0x807FFD00UL)
 #define IPC_FB_INFO_ADDR 0x807FFE80UL
+#define IPC_SHARED_PAD ((volatile uint32_t *)0x807FFD00UL)
 
 struct pad_state {
     signed short s1_x, s1_y, s2_x, s2_y;

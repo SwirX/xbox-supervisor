@@ -18,6 +18,6 @@ SECTIONS
     .sbss : { *(.sbss .sbss.*) }
     bss_end = .;
     heap_begin = .;
-    . = 0x9E000000;
+    . = 0x8F000000;
     __libc_stack_end = .;
 }
