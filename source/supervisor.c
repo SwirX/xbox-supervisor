@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <cache.h>
+#include <time/time.h>
+#include <xenon_smc/xenon_smc.h>
 #include <xenos/xenos.h>
 #include <xenos/xe.h>
 #include <xenos/edram.h>
@@ -149,10 +151,12 @@ static int handle_menu_input(void)
             if (pad.up && !prev_up && selection > 0) {
                 selection--;
                 dirty = 1;
+                udelay(50000);
             }
             if (pad.down && !prev_down && selection < MENU_ITEMS - 1) {
                 selection++;
                 dirty = 1;
+                udelay(50000);
             }
 
             if (pad.a && !prev_a)
@@ -173,6 +177,13 @@ static int handle_menu_input(void)
     }
 }
 
+static void execute_exit_to_xell(void)
+{
+    printf("\n  Returning to XeLL...\n");
+    udelay(500000);
+    xenon_smc_power_reboot();
+}
+
 void main(void)
 {
     struct XenosDevice xe;
@@ -189,9 +200,11 @@ void main(void)
     supervisor_early_init();
     boot_core1();
     launch_guest();
+
+    printf("\n[INIT] USB...\n");
     usb_init();
 
-    printf("\n[SUPV] Ready. Press Guide for menu.\n");
+    printf("[SUPV] Ready. Press Guide for menu.\n");
 
     int menu_open = 0;
     int guide_prev[NUM_CONTROLLERS] = {0};
@@ -213,9 +226,11 @@ void main(void)
                         int result = handle_menu_input();
 
                         if (result >= 0) {
-                            printf("\n  Selected: %s\n", menu_labels[result]);
-                            if (result == 2) {
-                                printf("\n  Exit not implemented yet.\n");
+                            if (result == 0) {
+                                /* Resume Game — just close menu */
+                            } else if (result == 2) {
+                                execute_exit_to_xell();
+                                /* unreachable */
                             }
                         }
 
