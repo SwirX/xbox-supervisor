@@ -7,9 +7,12 @@
  *
  * 0x80000000 - 0x807FFFFF   Supervisor code, data, heap, stack  (8 MB)
  * 0x807FF000 - 0x807FFFFF   IPC shared memory                    (4 KB)
- *   0x807FF000   cmd_ring  (IpcRingBuffer, 1280 B)
- *   0x807FF800   res_ring  (IpcRingBuffer, 1280 B)
- *   0x807FFF00   state     (IpcStateFlags,  256 B)
+ *   0x807FF000   cmd_ring    (IpcRingBuffer, 1280 B)
+ *   0x807FF800   res_ring    (IpcRingBuffer, 1280 B)
+ *   0x807FFCFC   input_gen   (uint32_t)
+ *   0x807FFD00   pads[0..3]  (controller_data_s, 304 B, ends 0x807FFE2F)
+ *   0x807FFE80   fb_info     (FbInfo, 20 B)
+ *   0x807FFF00   state       (IpcStateFlags, 256 B)
  * 0x80800000 onwards        Guest app space
  *
  * libxenon's internal BSS (ram_heap, heap, memp_memory, etc.) is
@@ -25,6 +28,7 @@
 #define IPC_RES_RING_ADDR      ((volatile IpcRingBuffer *)0x807FF800UL)
 #define IPC_INPUT_GEN_ADDR     ((volatile uint32_t *)0x807FFCFCUL)
 #define IPC_SHARED_PAD_ADDR    ((volatile struct controller_data_s *)0x807FFD00UL)
+#define IPC_FB_INFO_ADDR       0x807FFE80UL    /* cast to (volatile FbInfo *) at use */
 #define IPC_FLAGS_ADDR         ((volatile IpcStateFlags *)0x807FFF00UL)
 
 /* ── IPC Packet: 64 bytes flat ── */

@@ -15,6 +15,7 @@
 #include "ipc_ring.h"
 #include "barrier.h"
 #include "elf_format.h"
+#include "svc_framebuffer.h"
 
 extern volatile uint32_t wait[];
 extern void core1_process_engine(void);
@@ -55,6 +56,16 @@ static void supervisor_early_init(void)
     IPC_FLAGS_ADDR->out.supervisor_status = STATE_INIT;
     IPC_FLAGS_ADDR->in.current_state      = STATE_INIT;
     cache_flush_range((void *)IPC_SHMEM_BASE, IPC_SHMEM_SIZE);
+}
+
+static void fill_fb_black(void)
+{
+    volatile FbInfo *fbi = (volatile FbInfo *)IPC_FB_INFO_ADDR;
+    uint32_t *fb = (uint32_t *)fbi->base;
+    int count = fbi->stride * fbi->height;
+    for (int i = 0; i < count; i++)
+        fb[i] = 0xFF000000;
+    __asm__ volatile("sync" : : : "memory");
 }
 
 static void signal_pause(volatile IpcStateFlags *flags)
@@ -297,6 +308,20 @@ void main(void)
     console_init();
     console_clrscr();
 
+    {
+        volatile uint32_t *ati = (volatile uint32_t *)0xEC806100UL;
+        volatile FbInfo *fbi = (volatile FbInfo *)IPC_FB_INFO_ADDR;
+        uint32_t base = ati[4] | 0x80000000UL;
+        uint32_t w    = ati[13];
+        uint32_t h    = ati[14];
+        fbi->base   = base;
+        fbi->width  = w;
+        fbi->height = h;
+        fbi->stride = ((w + 31) >> 5) << 5;
+        fbi->bpp    = 4;
+        cache_flush_range((void *)fbi, sizeof(FbInfo));
+    }
+
     uint32_t pir;
     __asm__ volatile("mfspr %0, %1" : "=r"(pir) : "i"(PIR_SPR));
 
@@ -341,6 +366,7 @@ void main(void)
 
                         if (result == 0) {
                             signal_resume(flags);
+                            fill_fb_black();
                             console_clrscr();
                             printf("\n[SUPV] Core 1 resumed.\n");
                         } else if (result == 1) {
@@ -348,6 +374,7 @@ void main(void)
                                 send_exec_guest(&usb_payload);
                             }
                             signal_resume(flags);
+                            fill_fb_black();
                             console_clrscr();
                             printf("\n  Guest loaded. Press Guide for menu.\n");
                         } else if (result == 3) {
