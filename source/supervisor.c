@@ -334,19 +334,19 @@ void main(void)
                         int result = handle_menu_input();
 
                         if (result == 0) {
-                            /* Resume Game */
+                            signal_resume(flags);
+                            console_clrscr();
+                            printf("\n[SUPV] Core 1 resumed.\n");
                         } else if (result == 1) {
-                            /* Load from USB */
                             if (load_guest_from_usb(&usb_payload) == 0) {
                                 send_exec_guest(&usb_payload);
                             }
+                            signal_resume(flags);
+                            console_clrscr();
+                            printf("\n  Guest loaded. Press Guide for menu.\n");
                         } else if (result == 3) {
                             execute_exit_to_xell();
                         }
-
-                        signal_resume(flags);
-                        console_clrscr();
-                        printf("\n[SUPV] Core 1 resumed.\n");
                         menu_open = 0;
                     }
                 }
