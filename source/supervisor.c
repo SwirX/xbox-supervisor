@@ -331,15 +331,6 @@ void main(void)
             get_controller_data(&pad, port);
 
             IPC_SHARED_PAD_ADDR[port] = pad;
-        }
-
-        __asm__ volatile("eieio" : : : "memory");
-        *IPC_INPUT_GEN_ADDR = *IPC_INPUT_GEN_ADDR + 1;
-        __asm__ volatile("sync" : : : "memory");
-
-        for (int port = 0; port < NUM_CONTROLLERS; port++) {
-            struct controller_data_s pad;
-            pad = IPC_SHARED_PAD_ADDR[port];
 
             if (pad.logo && !guide_prev[port]) {
                 if (!menu_open) {
@@ -368,6 +359,10 @@ void main(void)
             }
             guide_prev[port] = pad.logo;
         }
+
+        __asm__ volatile("eieio" : : : "memory");
+        *IPC_INPUT_GEN_ADDR = *IPC_INPUT_GEN_ADDR + 1;
+        __asm__ volatile("sync" : : : "memory");
 
         __asm__ volatile("or 27, 27, 27");
     }
