@@ -1,25 +1,19 @@
 #include <stdint.h>
+#include <input/input.h>
 #include <svc_framebuffer.h>
 
 #define IPC_INPUT_GEN    ((volatile uint32_t *)0x807FFCFCUL)
 #define IPC_FB_INFO_ADDR 0x807FFE80UL
 #define IPC_SHARED_PAD ((volatile uint32_t *)0x807FFD00UL)
 
-struct pad_state {
-    signed short s1_x, s1_y, s2_x, s2_y;
-    int s1_z, s2_z, lb, rb, start, back, a, b, x, y, up, down, left, right;
-    unsigned char lt, rt;
-    int logo;
-};
-
-static struct pad_state read_pad(void)
+static struct controller_data_s read_pad(void)
 {
     uint32_t g1, g2;
-    struct pad_state pad;
+    struct controller_data_s pad;
     do {
         g1 = *IPC_INPUT_GEN;
         __asm__ volatile("sync" : : : "memory");
-        pad = *(volatile struct pad_state *)IPC_SHARED_PAD;
+        pad = *(volatile struct controller_data_s *)IPC_SHARED_PAD;
         __asm__ volatile("sync" : : : "memory");
         g2 = *IPC_INPUT_GEN;
     } while (g1 != g2 || (g1 & 1));
@@ -42,7 +36,7 @@ int main(void)
     fb_flush(fbi->base, fb_sz);
 
     while (1) {
-        struct pad_state pad = read_pad();
+        struct controller_data_s pad = read_pad();
 
         int y = 40;
         uint32_t g = 0xFF4488CC, w = 0xFFFFFFFF;
