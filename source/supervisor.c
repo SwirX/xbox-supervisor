@@ -95,6 +95,30 @@ static void launch_guest(void)
     }
 }
 
+static void signal_pause(volatile IpcStateFlags *flags)
+{
+    flags->out.target_action = STATE_PAUSE;
+    cache_flush_range(&flags->out.target_action, sizeof(uint32_t));
+    ppc_sync();
+
+    uint32_t timeout = 2000000;
+    while (flags->in.current_state != STATE_PAUSED && timeout--) {
+        cache_inval_line(&flags->in.current_state);
+    }
+}
+
+static void signal_resume(volatile IpcStateFlags *flags)
+{
+    flags->out.target_action = STATE_RESUME;
+    cache_flush_range(&flags->out.target_action, sizeof(uint32_t));
+    ppc_sync();
+
+    uint32_t timeout = 2000000;
+    while (flags->in.current_state != STATE_POLLING && timeout--) {
+        cache_inval_line(&flags->in.current_state);
+    }
+}
+
 void main(void)
 {
     struct XenosDevice xe;
@@ -124,35 +148,42 @@ void main(void)
     int usb_ok = usb_init();
     printf("[INIT] USB init: %s\n\n", usb_ok == 0 ? "OK" : "FAILED");
 
-    printf("[SUPV] Entering main loop\n");
-    printf("       CMD_RING @ 0x%08X\n", (uint32_t)(uintptr_t)IPC_CMD_RING_ADDR);
-    printf("       RES_RING @ 0x%08X\n", (uint32_t)(uintptr_t)IPC_RES_RING_ADDR);
-    printf("       FLAGS    @ 0x%08X\n\n", (uint32_t)(uintptr_t)IPC_FLAGS_ADDR);
+    printf("[SUPV] Entering main loop\n\n");
 
-    uint32_t tick = 0;
+    int menu_open = 0;
     int guide_prev[NUM_CONTROLLERS] = {0};
 
     while (1) {
         volatile IpcStateFlags *flags = IPC_FLAGS_ADDR;
-        cache_inval_line(&flags->in.core1_heartbeat);
-
-        if (flags->in.core1_heartbeat != tick) {
-            tick = flags->in.core1_heartbeat;
-            printf("[SUPV] Core 1 heartbeat: %u\n", tick);
-        }
 
         usb_do_poll();
 
         for (int port = 0; port < NUM_CONTROLLERS; port++) {
             struct controller_data_s pad;
-            int connected = get_controller_data(&pad, port);
+            get_controller_data(&pad, port);
 
-            if (connected == 0) {
-                if (pad.logo && !guide_prev[port]) {
-                    printf("[INPUT] Guide button (port %d)\n", port);
+            if (pad.logo && !guide_prev[port]) {
+                if (!menu_open) {
+                    printf("[GUIDE] Opening menu...\n");
+                    signal_pause(flags);
+                    if (flags->in.current_state == STATE_PAUSED) {
+                        menu_open = 1;
+                        printf("[GUIDE] Menu open. Press Guide to close.\n");
+                    } else {
+                        printf("[GUIDE] WARNING: Core 1 did not pause\n");
+                    }
+                } else {
+                    printf("[GUIDE] Closing menu...\n");
+                    signal_resume(flags);
+                    if (flags->in.current_state == STATE_POLLING) {
+                        menu_open = 0;
+                        printf("[GUIDE] Menu closed.\n");
+                    } else {
+                        printf("[GUIDE] WARNING: Core 1 did not resume\n");
+                    }
                 }
-                guide_prev[port] = pad.logo;
             }
+            guide_prev[port] = pad.logo;
         }
 
         __asm__ volatile("or 27, 27, 27");
