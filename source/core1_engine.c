@@ -6,6 +6,22 @@
 
 extern void core1_guest_entry(ElfExecPayload *payload);
 
+static void handle_pause(volatile IpcStateFlags *flags)
+{
+    flags->in.current_state = STATE_PAUSED;
+    cache_flush_range(&flags->in.current_state, sizeof(uint32_t));
+    ppc_sync();
+
+    while (flags->out.target_action == STATE_PAUSE) {
+        cache_inval_line(&flags->out.target_action);
+        __asm__ volatile("or 27, 27, 27");
+    }
+
+    flags->in.current_state = STATE_POLLING;
+    cache_flush_range(&flags->in.current_state, sizeof(uint32_t));
+    ppc_sync();
+}
+
 void __attribute__((noreturn)) core1_process_engine(void)
 {
     volatile IpcStateFlags *flags = IPC_FLAGS_ADDR;
@@ -19,6 +35,13 @@ void __attribute__((noreturn)) core1_process_engine(void)
 
     while (1) {
         flags->in.core1_heartbeat++;
+
+        if (flags->out.target_action == STATE_PAUSE) {
+            cache_inval_line(&flags->out.target_action);
+            if (flags->out.target_action == STATE_PAUSE) {
+                handle_pause(flags);
+            }
+        }
 
         __asm__ volatile("dcbf 0, %0" : : "r"((uint32_t)IPC_CMD_RING_ADDR & ~0x7F));
         __asm__ volatile("sync");

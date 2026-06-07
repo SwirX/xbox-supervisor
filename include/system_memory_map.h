@@ -59,6 +59,9 @@ typedef struct {
 /* ── Handshake states ── */
 #define STATE_INIT       0x00000000
 #define STATE_POLLING    0x504F4C4C          /* "POLL" */
+#define STATE_PAUSE      0x50415553          /* "PAUS" — request */
+#define STATE_PAUSED     0x50534400          /* "PSD\0" — acknowledge */
+#define STATE_RESUME     0x5245534D          /* "RESM" */
 #define STATE_QUARANTINE 0x5145524E          /* "QERN" */
 #define STATE_ACK        0x41434B4E          /* "ACKN" */
 
