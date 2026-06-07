@@ -68,6 +68,21 @@ static void fill_fb_black(void)
     __asm__ volatile("sync" : : : "memory");
 }
 
+static void update_pads_and_gen(void)
+{
+    __asm__ volatile("eieio" : : : "memory");
+    *IPC_INPUT_GEN_ADDR = *IPC_INPUT_GEN_ADDR + 1;
+    __asm__ volatile("sync" : : : "memory");
+    for (int port = 0; port < NUM_CONTROLLERS; port++) {
+        struct controller_data_s pad;
+        get_controller_data(&pad, port);
+        IPC_SHARED_PAD_ADDR[port] = pad;
+    }
+    __asm__ volatile("eieio" : : : "memory");
+    *IPC_INPUT_GEN_ADDR = *IPC_INPUT_GEN_ADDR + 1;
+    __asm__ volatile("sync" : : : "memory");
+}
+
 static void signal_pause(volatile IpcStateFlags *flags)
 {
     flags->out.target_action = STATE_PAUSE;
@@ -371,6 +386,7 @@ void main(void)
                             printf("\n[SUPV] Core 1 resumed.\n");
                         } else if (result == 1) {
                             if (load_guest_from_usb(&usb_payload) == 0) {
+                                update_pads_and_gen();
                                 send_exec_guest(&usb_payload);
                             }
                             signal_resume(flags);
