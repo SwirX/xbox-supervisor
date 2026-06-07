@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <cache.h>
 #include <xenos/xenos.h>
 #include <xenos/xe.h>
 #include <xenos/edram.h>
@@ -18,6 +20,13 @@ extern int load_embedded_guest_elf(ElfExecPayload *out_payload);
 #define CORE1_STACK_TOP  0x807E0000UL
 #define PIR_SPR          1023
 #define NUM_CONTROLLERS  4
+#define MENU_ITEMS       3
+
+static const char *menu_labels[MENU_ITEMS] = {
+    "Resume Game",
+    "Settings",
+    "Exit to XeLL"
+};
 
 static void boot_core1(void)
 {
@@ -27,19 +36,9 @@ static void boot_core1(void)
     wait[3] = CORE1_STACK_TOP - 256;
     ppc_sync();
 
-    printf("[BOOT] Core 1 wait[] set: func=0x%08X stack=0x%08X\n",
-           wait[2], wait[3]);
-
     uint32_t timeout = 5000000;
     while (flags->in.current_state != STATE_POLLING && timeout--) {
         cache_inval_line(&flags->in.current_state);
-    }
-
-    if (flags->in.current_state == STATE_POLLING) {
-        printf("[BOOT] Core 1 online! (state=0x%08X)\n\n",
-               flags->in.current_state);
-    } else {
-        printf("[BOOT] WARNING: Core 1 did not signal POLLING\n\n");
     }
 }
 
@@ -58,16 +57,8 @@ static void launch_guest(void)
     ElfExecPayload payload;
     int ret = load_embedded_guest_elf(&payload);
 
-    if (ret < 0) {
-        printf("[GUEST] No embedded ELF (err=%d) — skipping\n", ret);
+    if (ret < 0)
         return;
-    }
-
-    printf("[GUEST] Embedded ELF loaded:\n");
-    printf("        entry=0x%08X  stack=0x%08X\n",
-           payload.entry_point, payload.stack_pointer);
-    printf("        text_start=0x%08X  text_size=%u\n",
-           payload.guest_text_start, payload.guest_text_size);
 
     IPC_FLAGS_ADDR->out.supervisor_status = 0;
     cache_flush_range(&IPC_FLAGS_ADDR->out.supervisor_status, sizeof(uint32_t));
@@ -79,7 +70,6 @@ static void launch_guest(void)
     memcpy(cmd.payload, &payload, sizeof(ElfExecPayload));
 
     while (!ipc_ring_push((IpcRingBuffer *)IPC_CMD_RING_ADDR, &cmd));
-    printf("[GUEST] CMD_EXEC_GUEST sent to Core 1\n");
 
     uint32_t magic;
     uint32_t timeout = 2000000;
@@ -87,12 +77,6 @@ static void launch_guest(void)
         cache_inval_line(&IPC_FLAGS_ADDR->out.supervisor_status);
         magic = IPC_FLAGS_ADDR->out.supervisor_status;
     } while (magic == 0 && timeout--);
-
-    if (magic == 0) {
-        printf("[GUEST] WARNING: guest did not respond (timeout)\n");
-    } else {
-        printf("[GUEST] Guest returned! magic=0x%08X\n", magic);
-    }
 }
 
 static void signal_pause(volatile IpcStateFlags *flags)
@@ -119,9 +103,71 @@ static void signal_resume(volatile IpcStateFlags *flags)
     }
 }
 
+static void draw_menu(int selection)
+{
+    console_clrscr();
+    printf("\n  GUIDE MENU\n");
+    printf("  ==========\n\n");
+
+    for (int i = 0; i < MENU_ITEMS; i++) {
+        if (i == selection)
+            printf("  > %s\n", menu_labels[i]);
+        else
+            printf("    %s\n", menu_labels[i]);
+    }
+
+    printf("\n  A=Select  Guide=Close\n");
+}
+
+static int handle_menu_input(void)
+{
+    int selection = 0;
+    int prev_up = 0, prev_down = 0, prev_a = 0;
+
+    while (1) {
+        usb_do_poll();
+
+        for (int port = 0; port < NUM_CONTROLLERS; port++) {
+            struct controller_data_s pad;
+            get_controller_data(&pad, port);
+
+            if (pad.logo)
+                return -1;
+
+            if (pad.up && !prev_up && selection > 0)
+                selection--;
+            if (pad.down && !prev_down && selection < MENU_ITEMS - 1)
+                selection++;
+
+            if (pad.a && !prev_a)
+                return selection;
+
+            prev_up   = pad.up;
+            prev_down = pad.down;
+            prev_a    = pad.a;
+        }
+
+        draw_menu(selection);
+    }
+}
+
+static void save_framebuffer(struct XenosSurface *fb, void *backup)
+{
+    memcpy(backup, fb->base, fb->width * fb->height * 4);
+}
+
+static void restore_framebuffer(struct XenosSurface *fb, void *backup)
+{
+    int fb_size = fb->width * fb->height * 4;
+    memcpy(fb->base, backup, fb_size);
+    memdcbst(fb->base, fb_size);
+}
+
 void main(void)
 {
     struct XenosDevice xe;
+    struct XenosSurface *fb;
+    void *fb_backup = NULL;
 
     xenos_init(VIDEO_MODE_AUTO);
     Xe_Init(&xe);
@@ -129,26 +175,17 @@ void main(void)
     console_init();
     console_clrscr();
 
-    printf("XBOX SUPERVISOR v0.1\n");
-    printf("====================\n");
-    printf("Ring 0 libxenon based\n\n");
-
     uint32_t pir;
     __asm__ volatile("mfspr %0, %1" : "=r"(pir) : "i"(PIR_SPR));
-    printf("[BOOT] Core 0 running, PIR=%u\n", pir);
+
+    fb = Xe_GetFramebufferSurface(&xe);
 
     supervisor_early_init();
-    printf("[BOOT] IPC shared memory @ 0x%08X\n", (uint32_t)IPC_SHMEM_BASE);
-
     boot_core1();
-
     launch_guest();
+    usb_init();
 
-    printf("\n[INIT] Starting USB...\n");
-    int usb_ok = usb_init();
-    printf("[INIT] USB init: %s\n\n", usb_ok == 0 ? "OK" : "FAILED");
-
-    printf("[SUPV] Entering main loop\n\n");
+    printf("\n[SUPV] Ready. Press Guide for menu.\n");
 
     int menu_open = 0;
     int guide_prev[NUM_CONTROLLERS] = {0};
@@ -164,22 +201,27 @@ void main(void)
 
             if (pad.logo && !guide_prev[port]) {
                 if (!menu_open) {
-                    printf("[GUIDE] Opening menu...\n");
                     signal_pause(flags);
                     if (flags->in.current_state == STATE_PAUSED) {
+                        fb_backup = malloc(fb->width * fb->height * 4);
+                        if (fb_backup) {
+                            save_framebuffer(fb, fb_backup);
+                        }
                         menu_open = 1;
-                        printf("[GUIDE] Menu open. Press Guide to close.\n");
-                    } else {
-                        printf("[GUIDE] WARNING: Core 1 did not pause\n");
-                    }
-                } else {
-                    printf("[GUIDE] Closing menu...\n");
-                    signal_resume(flags);
-                    if (flags->in.current_state == STATE_POLLING) {
+
+                        int result = handle_menu_input();
+
+                        if (result >= 0) {
+                            printf("\nSelected: %s\n", menu_labels[result]);
+                        }
+
+                        if (fb_backup) {
+                            restore_framebuffer(fb, fb_backup);
+                            free(fb_backup);
+                            fb_backup = NULL;
+                        }
+                        signal_resume(flags);
                         menu_open = 0;
-                        printf("[GUIDE] Menu closed.\n");
-                    } else {
-                        printf("[GUIDE] WARNING: Core 1 did not resume\n");
                     }
                 }
             }
