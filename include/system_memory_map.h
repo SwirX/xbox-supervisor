@@ -9,9 +9,15 @@
  * 0x807FF000 - 0x807FFFFF   IPC shared memory (4 KB)
  *   0x807FF000   cmd_ring   (IpcRingBuffer, 1280 B)
  *   0x807FF800   res_ring   (IpcRingBuffer, 1280 B)
- *   0x807FFD00   shared_pad (controller_data_s[4], 296 B)
+ *   0x807FFCFC   input_gen  (uint32_t generation counter)
+ *   0x807FFD00   shared_pad (controller_data_s[4])
  *   0x807FFF00   state      (IpcStateFlags, 256 B)
  * 0x80800000 onwards         Guest app space
+ *
+ * Input generation protocol:
+ *   Core 0: gen++ → sync → write pads → sync → gen++
+ *   Core 1: spin until gen even AND stable (g1==g2), then read pads
+ *   Even gen = data consistent, odd gen = write in progress
  */
 
 #define SUPERVISOR_LIMIT       0x80800000UL
@@ -20,6 +26,7 @@
 
 #define IPC_CMD_RING_ADDR      ((volatile IpcRingBuffer *)0x807FF000UL)
 #define IPC_RES_RING_ADDR      ((volatile IpcRingBuffer *)0x807FF800UL)
+#define IPC_INPUT_GEN_ADDR     ((volatile uint32_t *)0x807FFCFCUL)
 #define IPC_SHARED_PAD_ADDR    ((volatile struct controller_data_s *)0x807FFD00UL)
 #define IPC_FLAGS_ADDR         ((volatile IpcStateFlags *)0x807FFF00UL)
 
