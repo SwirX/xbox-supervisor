@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <string.h>
-#include <stdlib.h>
 #include <cache.h>
 #include <xenos/xenos.h>
 #include <xenos/xe.h>
@@ -123,6 +122,7 @@ static int handle_menu_input(void)
 {
     int selection = 0;
     int prev_up = 0, prev_down = 0, prev_a = 0;
+    int dirty = 1;
 
     while (1) {
         usb_do_poll();
@@ -134,10 +134,14 @@ static int handle_menu_input(void)
             if (pad.logo)
                 return -1;
 
-            if (pad.up && !prev_up && selection > 0)
+            if (pad.up && !prev_up && selection > 0) {
                 selection--;
-            if (pad.down && !prev_down && selection < MENU_ITEMS - 1)
+                dirty = 1;
+            }
+            if (pad.down && !prev_down && selection < MENU_ITEMS - 1) {
                 selection++;
+                dirty = 1;
+            }
 
             if (pad.a && !prev_a)
                 return selection;
@@ -147,27 +151,18 @@ static int handle_menu_input(void)
             prev_a    = pad.a;
         }
 
-        draw_menu(selection);
+        if (dirty) {
+            draw_menu(selection);
+            dirty = 0;
+        }
+
+        __asm__ volatile("or 27, 27, 27");
     }
-}
-
-static void save_framebuffer(struct XenosSurface *fb, void *backup)
-{
-    memcpy(backup, fb->base, fb->width * fb->height * 4);
-}
-
-static void restore_framebuffer(struct XenosSurface *fb, void *backup)
-{
-    int fb_size = fb->width * fb->height * 4;
-    memcpy(fb->base, backup, fb_size);
-    memdcbst(fb->base, fb_size);
 }
 
 void main(void)
 {
     struct XenosDevice xe;
-    struct XenosSurface *fb;
-    void *fb_backup = NULL;
 
     xenos_init(VIDEO_MODE_AUTO);
     Xe_Init(&xe);
@@ -177,8 +172,6 @@ void main(void)
 
     uint32_t pir;
     __asm__ volatile("mfspr %0, %1" : "=r"(pir) : "i"(PIR_SPR));
-
-    fb = Xe_GetFramebufferSurface(&xe);
 
     supervisor_early_init();
     boot_core1();
@@ -203,24 +196,19 @@ void main(void)
                 if (!menu_open) {
                     signal_pause(flags);
                     if (flags->in.current_state == STATE_PAUSED) {
-                        fb_backup = malloc(fb->width * fb->height * 4);
-                        if (fb_backup) {
-                            save_framebuffer(fb, fb_backup);
-                        }
                         menu_open = 1;
-
                         int result = handle_menu_input();
 
                         if (result >= 0) {
-                            printf("\nSelected: %s\n", menu_labels[result]);
+                            printf("\n  Selected: %s\n", menu_labels[result]);
+                            if (result == 2) {
+                                printf("\n  Exit not implemented yet.\n");
+                            }
                         }
 
-                        if (fb_backup) {
-                            restore_framebuffer(fb, fb_backup);
-                            free(fb_backup);
-                            fb_backup = NULL;
-                        }
                         signal_resume(flags);
+                        console_clrscr();
+                        printf("\n[SUPV] Core 1 resumed.\n");
                         menu_open = 0;
                     }
                 }
