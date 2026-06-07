@@ -308,6 +308,11 @@ void main(void)
     console_init();
     console_clrscr();
 
+    uint32_t pir;
+    __asm__ volatile("mfspr %0, %1" : "=r"(pir) : "i"(PIR_SPR));
+
+    supervisor_early_init();
+
     {
         volatile uint32_t *ati = (volatile uint32_t *)0xEC806100UL;
         volatile FbInfo *fbi = (volatile FbInfo *)IPC_FB_INFO_ADDR;
@@ -321,11 +326,6 @@ void main(void)
         fbi->bpp    = 4;
         cache_flush_range((void *)fbi, sizeof(FbInfo));
     }
-
-    uint32_t pir;
-    __asm__ volatile("mfspr %0, %1" : "=r"(pir) : "i"(PIR_SPR));
-
-    supervisor_early_init();
     boot_core1();
 
     printf("\n[INIT] USB...\n");
