@@ -120,8 +120,20 @@ static void draw_menu(int selection)
 
 static int handle_menu_input(void)
 {
+    int any_held = 1;
+    while (any_held) {
+        usb_do_poll();
+        any_held = 0;
+        for (int port = 0; port < NUM_CONTROLLERS; port++) {
+            struct controller_data_s pad;
+            get_controller_data(&pad, port);
+            if (pad.logo)
+                any_held = 1;
+        }
+    }
+
     int selection = 0;
-    int prev_up = 0, prev_down = 0, prev_a = 0;
+    int prev_up = 0, prev_down = 0, prev_logo = 0, prev_a = 0;
     int dirty = 1;
 
     while (1) {
@@ -131,7 +143,7 @@ static int handle_menu_input(void)
             struct controller_data_s pad;
             get_controller_data(&pad, port);
 
-            if (pad.logo)
+            if (pad.logo && !prev_logo)
                 return -1;
 
             if (pad.up && !prev_up && selection > 0) {
@@ -146,9 +158,10 @@ static int handle_menu_input(void)
             if (pad.a && !prev_a)
                 return selection;
 
-            prev_up   = pad.up;
-            prev_down = pad.down;
-            prev_a    = pad.a;
+            prev_up    = pad.up;
+            prev_down  = pad.down;
+            prev_a     = pad.a;
+            prev_logo  = pad.logo;
         }
 
         if (dirty) {
