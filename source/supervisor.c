@@ -326,6 +326,10 @@ void main(void)
             struct controller_data_s pad;
             get_controller_data(&pad, port);
 
+            volatile struct controller_data_s *shared = &IPC_SHARED_PAD_ADDR[port];
+            *shared = pad;
+            cache_flush_range((void *)shared, sizeof(struct controller_data_s));
+
             if (pad.logo && !guide_prev[port]) {
                 if (!menu_open) {
                     signal_pause(flags);
