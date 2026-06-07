@@ -12,6 +12,5 @@ source/uart.c
 source/vectors.S
 test_guest.S
 test_screen.c
-test_guest.lds
 guest_application.elf
 guest_application.o
