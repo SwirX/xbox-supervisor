@@ -299,6 +299,14 @@ static int run_guide_menu(const GfxCtx *gfx)
             gfx_fill_rect(gfx, 8, dy - 2, BLADE_W - 16, 20, PAL_BLADE_BG);
             gfx_draw_str(gfx, 16, dy, dbg, PAL_TEXT_HINT, 0, 0);
 
+            char navbuf[80];
+            int ny = dy + 22;
+            snprintf(navbuf, sizeof(navbuf), "sel:%d wU:%d wD:%d aD:%d rp:%d pu:%d pd:%d",
+                     selection, want_up, want_down, active_dir, repeat_phase,
+                     prev_up, prev_down);
+            gfx_fill_rect(gfx, 8, ny - 2, BLADE_W - 16, 20, PAL_BLADE_BG);
+            gfx_draw_str(gfx, 16, ny, navbuf, PAL_TEXT_HINT, 0, 0);
+
             {
                 uint32_t b = (uint32_t)gfx->fb;
                 uint32_t e = b + BLADE_W * gfx->height * 4;
