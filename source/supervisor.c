@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
 #include <cache.h>
 #include <time/time.h>
 #include <libfat/fat.h>
@@ -27,6 +28,21 @@ extern void core1_process_engine(void);
 #define GUEST_BASE        0x81000000UL
 #define CACHE_LINE_SIZE   128
 #define BLADE_W           320
+
+/* ── Color palette (no blue shades) ── */
+#define PAL_BLADE_BG     0xBB101010
+#define PAL_STRIP_BG     0xFF1A1A1A
+#define PAL_ACCENT       0xFF00FF66
+#define PAL_TEXT_SEL     0xFFFFFFFF
+#define PAL_TEXT_UNSEL   0xFF888888
+#define PAL_TEXT_HINT    0xFF666666
+#define PAL_RTC          0xFF00FF66
+
+/* ── Clock overlay region (top-right, outside blade) ── */
+#define CLOCK_SX         1100
+#define CLOCK_SY         32
+#define CLOCK_SW         180
+#define CLOCK_SH         56
 
 static const char *menu_labels[MENU_ITEMS] = {
     "Resume Game",
@@ -67,6 +83,7 @@ static void update_pads_and_gen(void)
     for (int port = 0; port < NUM_CONTROLLERS; port++) {
         struct controller_data_s pad;
         get_controller_data(&pad, port);
+        pad.logo = 0;
         IPC_SHARED_PAD_ADDR[port] = pad;
     }
     __asm__ volatile("eieio" : : : "memory");
@@ -99,6 +116,33 @@ static void signal_resume(volatile IpcStateFlags *flags)
 }
 
 static uint32_t guide_backup[BLADE_W * 720] __attribute__((aligned(128)));
+static uint32_t clock_backup[CLOCK_SW * CLOCK_SH] __attribute__((aligned(128)));
+
+static void restore_blade_and_clock(const GfxCtx *gfx)
+{
+    for (int row = 0; row < gfx->height; row++)
+        for (int col = 0; col < BLADE_W; col++)
+            gfx->fb[gfx_tile_idx(col, row, gfx->stride)] =
+                guide_backup[row * BLADE_W + col];
+    for (int row = 0; row < CLOCK_SH; row++)
+        for (int col = 0; col < CLOCK_SW; col++)
+            gfx->fb[gfx_tile_idx(CLOCK_SX + col, CLOCK_SY + row, gfx->stride)] =
+                clock_backup[row * CLOCK_SW + col];
+    gfx_flush(gfx);
+}
+
+static void draw_clock(const GfxCtx *gfx)
+{
+    time_t now = time(NULL);
+    struct tm *lt = localtime(&now);
+    char tbuf[16], dbuf[32];
+    strftime(tbuf, sizeof(tbuf), "%H:%M", lt);
+    strftime(dbuf, sizeof(dbuf), "%a, %b %d", lt);
+    int tx_time = 1280 - 40 - ((int)strlen(tbuf) * 8);
+    int tx_date = 1280 - 40 - ((int)strlen(dbuf) * 8);
+    gfx_draw_str(gfx, tx_time, 36, tbuf, PAL_RTC, 0, 0);
+    gfx_draw_str(gfx, tx_date, 56, dbuf, PAL_RTC, 0, 0);
+}
 
 static int run_guide_menu(const GfxCtx *gfx)
 {
@@ -118,12 +162,18 @@ static int run_guide_menu(const GfxCtx *gfx)
         for (int col = 0; col < BLADE_W; col++)
             guide_backup[row * BLADE_W + col] =
                 gfx->fb[gfx_tile_idx(col, row, gfx->stride)];
+    for (int row = 0; row < CLOCK_SH; row++)
+        for (int col = 0; col < CLOCK_SW; col++)
+            clock_backup[row * CLOCK_SW + col] =
+                gfx->fb[gfx_tile_idx(CLOCK_SX + col, CLOCK_SY + row, gfx->stride)];
 
-    gfx_fill_rect(gfx, 0, 0, BLADE_W, gfx->height, 0xFF101010);
-    gfx_fill_rect(gfx, BLADE_W - 1, 0, 1, gfx->height, 0xFF4488CC);
-    gfx_fill_rect(gfx, 8, 8, BLADE_W - 16, 24, 0xFF1A2A3A);
-    gfx_draw_str(gfx, 16, 12, "MENU", 0xFFFFFFFF, 0, 0);
-    gfx_fill_rect(gfx, 16, 34, BLADE_W - 32, 1, 0xFF4488CC);
+    gfx_fill_rect(gfx, 0, 0, BLADE_W, gfx->height, PAL_BLADE_BG);
+    gfx_fill_rect(gfx, BLADE_W - 1, 0, 1, gfx->height, PAL_ACCENT);
+    gfx_fill_rect(gfx, 8, 8, BLADE_W - 16, 24, PAL_STRIP_BG);
+    gfx_draw_str(gfx, 16, 12, "GUIDE", PAL_ACCENT, 0, 0);
+    gfx_fill_rect(gfx, 16, 34, BLADE_W - 32, 1, PAL_ACCENT);
+
+    draw_clock(gfx);
 
     {
         uint32_t b = (uint32_t)gfx->fb;
@@ -136,24 +186,42 @@ static int run_guide_menu(const GfxCtx *gfx)
     int selection = 0;
     int prev_up = 0, prev_down = 0, prev_logo = 0, prev_a = 0;
     int dirty = 1;
+    time_t last_clock = time(NULL);
 
     while (1) {
         usb_do_poll();
 
+        time_t now = time(NULL);
+        if (now != last_clock) {
+            last_clock = now;
+            for (int row = 0; row < CLOCK_SH; row++)
+                for (int col = 0; col < CLOCK_SW; col++)
+                    gfx->fb[gfx_tile_idx(CLOCK_SX + col, CLOCK_SY + row, gfx->stride)] =
+                        clock_backup[row * CLOCK_SW + col];
+            draw_clock(gfx);
+            {
+                uint32_t b = (uint32_t)gfx->fb + CLOCK_SY * gfx->stride * 4;
+                uint32_t e = b + CLOCK_SH * gfx->stride * 4;
+                for (uint32_t p = b & ~0x7F; p < e; p += 128)
+                    __asm__ volatile("dcbf 0, %0" : : "r"(p) : "memory");
+                __asm__ volatile("sync" : : : "memory");
+            }
+        }
+
         if (dirty) {
             for (int i = 0; i < MENU_ITEMS; i++) {
                 int item_y = 40 + i * 28;
-                gfx_fill_rect(gfx, 0, item_y - 2, BLADE_W - 1, 20, 0xFF101010);
+                gfx_fill_rect(gfx, 0, item_y - 2, BLADE_W - 1, 20, PAL_BLADE_BG);
                 if (i == selection) {
-                    gfx_fill_rect(gfx, 8, item_y - 2, BLADE_W - 16, 20, 0xFF2A4A6A);
-                    gfx_draw_str(gfx, 16, item_y, menu_labels[i], 0xFFFFFFFF, 0, 0);
+                    gfx_fill_rect(gfx, 8, item_y - 2, BLADE_W - 16, 20, PAL_STRIP_BG);
+                    gfx_draw_str(gfx, 16, item_y, menu_labels[i], PAL_TEXT_SEL, 0, 0);
                 } else {
-                    gfx_draw_str(gfx, 16, item_y, menu_labels[i], 0xFF888888, 0, 0);
+                    gfx_draw_str(gfx, 16, item_y, menu_labels[i], PAL_TEXT_UNSEL, 0, 0);
                 }
             }
 
             gfx_draw_str(gfx, 16, 40 + MENU_ITEMS * 28 + 8,
-                         "A=Select  Guide=Close", 0xFF666666, 0, 0);
+                         "A=Select  Guide=Close", PAL_TEXT_HINT, 0, 0);
 
             {
                 uint32_t b = (uint32_t)gfx->fb;
@@ -171,11 +239,7 @@ static int run_guide_menu(const GfxCtx *gfx)
             get_controller_data(&pad, port);
 
             if (pad.logo && !prev_logo) {
-                for (int row = 0; row < gfx->height; row++)
-                    for (int col = 0; col < BLADE_W; col++)
-                        gfx->fb[gfx_tile_idx(col, row, gfx->stride)] =
-                            guide_backup[row * BLADE_W + col];
-                gfx_flush(gfx);
+                restore_blade_and_clock(gfx);
                 return -1;
             }
 
@@ -191,11 +255,7 @@ static int run_guide_menu(const GfxCtx *gfx)
             }
 
             if (pad.a && !prev_a) {
-                for (int row = 0; row < gfx->height; row++)
-                    for (int col = 0; col < BLADE_W; col++)
-                        gfx->fb[gfx_tile_idx(col, row, gfx->stride)] =
-                            guide_backup[row * BLADE_W + col];
-                gfx_flush(gfx);
+                restore_blade_and_clock(gfx);
                 return selection;
             }
 
@@ -342,6 +402,62 @@ static void execute_exit_to_xell(void)
     xenon_smc_power_reboot();
 }
 
+static void service_loop(GfxCtx *gfx, ElfExecPayload *usb_payload)
+{
+    int menu_open = 0;
+    int guide_prev[NUM_CONTROLLERS] = {0};
+
+    while (1) {
+        volatile IpcStateFlags *flags = IPC_FLAGS_ADDR;
+
+        usb_do_poll();
+
+        __asm__ volatile("eieio" : : : "memory");
+        *IPC_INPUT_GEN_ADDR = *IPC_INPUT_GEN_ADDR + 1;
+        __asm__ volatile("sync" : : : "memory");
+
+        for (int port = 0; port < NUM_CONTROLLERS; port++) {
+            struct controller_data_s pad;
+            get_controller_data(&pad, port);
+
+            if (pad.logo && !guide_prev[port]) {
+                if (!menu_open) {
+                    signal_pause(flags);
+                    if (flags->in.current_state == STATE_PAUSED) {
+                        menu_open = 1;
+                        int result = run_guide_menu(gfx);
+
+                        if (result == 0) {
+                            signal_resume(flags);
+                        } else if (result == 1) {
+                            if (load_guest_from_usb(usb_payload) == 0) {
+                                update_pads_and_gen();
+                                send_exec_guest(usb_payload);
+                            }
+                            signal_resume(flags);
+                            gfx_clear(gfx, 0xFF000000);
+                            gfx_flush(gfx);
+                        } else if (result == 3) {
+                            execute_exit_to_xell();
+                        }
+                        menu_open = 0;
+                    }
+                }
+            }
+            guide_prev[port] = pad.logo;
+
+            pad.logo = 0;
+            IPC_SHARED_PAD_ADDR[port] = pad;
+        }
+
+        __asm__ volatile("eieio" : : : "memory");
+        *IPC_INPUT_GEN_ADDR = *IPC_INPUT_GEN_ADDR + 1;
+        __asm__ volatile("sync" : : : "memory");
+
+        __asm__ volatile("or 27, 27, 27");
+    }
+}
+
 void main(void)
 {
     struct XenosDevice xe;
@@ -386,56 +502,6 @@ void main(void)
 
     printf("[SUPV] Ready. Press Guide for menu.\n");
 
-    int menu_open = 0;
-    int guide_prev[NUM_CONTROLLERS] = {0};
     ElfExecPayload usb_payload;
-
-    while (1) {
-        volatile IpcStateFlags *flags = IPC_FLAGS_ADDR;
-
-        usb_do_poll();
-
-        __asm__ volatile("eieio" : : : "memory");
-        *IPC_INPUT_GEN_ADDR = *IPC_INPUT_GEN_ADDR + 1;
-        __asm__ volatile("sync" : : : "memory");
-
-        for (int port = 0; port < NUM_CONTROLLERS; port++) {
-            struct controller_data_s pad;
-            get_controller_data(&pad, port);
-
-            IPC_SHARED_PAD_ADDR[port] = pad;
-
-            if (pad.logo && !guide_prev[port]) {
-                if (!menu_open) {
-                    signal_pause(flags);
-                    if (flags->in.current_state == STATE_PAUSED) {
-                        menu_open = 1;
-                        int result = run_guide_menu(&gfx_sv);
-
-                        if (result == 0) {
-                            signal_resume(flags);
-                        } else if (result == 1) {
-                            if (load_guest_from_usb(&usb_payload) == 0) {
-                                update_pads_and_gen();
-                                send_exec_guest(&usb_payload);
-                            }
-                            signal_resume(flags);
-                            gfx_clear(&gfx_sv, 0xFF000000);
-                            gfx_flush(&gfx_sv);
-                        } else if (result == 3) {
-                            execute_exit_to_xell();
-                        }
-                        menu_open = 0;
-                    }
-                }
-            }
-            guide_prev[port] = pad.logo;
-        }
-
-        __asm__ volatile("eieio" : : : "memory");
-        *IPC_INPUT_GEN_ADDR = *IPC_INPUT_GEN_ADDR + 1;
-        __asm__ volatile("sync" : : : "memory");
-
-        __asm__ volatile("or 27, 27, 27");
-    }
+    service_loop(&gfx_sv, &usb_payload);
 }
