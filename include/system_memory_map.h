@@ -31,6 +31,14 @@
 #define IPC_FB_INFO_ADDR       0x807FFE80UL    /* cast to (volatile FbInfo *) at use */
 #define IPC_FLAGS_ADDR         ((volatile IpcStateFlags *)0x807FFF00UL)
 
+typedef struct {
+    uint32_t base;
+    uint32_t width;
+    uint32_t height;
+    uint32_t stride;
+    uint32_t bpp;
+} FbInfo;
+
 /* ── IPC Packet: 64 bytes flat ── */
 #define PACKET_PAYLOAD_SIZE 56
 

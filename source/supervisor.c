@@ -15,7 +15,7 @@
 #include "ipc_ring.h"
 #include "barrier.h"
 #include "elf_format.h"
-#include "svc_framebuffer.h"
+#include "gfx.h"
 
 extern volatile uint32_t wait[];
 extern void core1_process_engine(void);
@@ -58,13 +58,9 @@ static void supervisor_early_init(void)
     cache_flush_range((void *)IPC_SHMEM_BASE, IPC_SHMEM_SIZE);
 }
 
-static void fill_fb_black(void)
+static void fill_fb_black(const GfxCtx *gfx)
 {
-    volatile FbInfo *fbi = (volatile FbInfo *)IPC_FB_INFO_ADDR;
-    uint32_t *fb = (uint32_t *)fbi->base;
-    int count = fbi->stride * fbi->height;
-    for (int i = 0; i < count; i++)
-        fb[i] = 0xFF000000;
+    gfx_clear(gfx, 0xFF000000);
     __asm__ volatile("sync" : : : "memory");
 }
 
@@ -341,6 +337,10 @@ void main(void)
         fbi->bpp    = 4;
         cache_flush_range((void *)fbi, sizeof(FbInfo));
     }
+
+    GfxCtx gfx_sv;
+    gfx_init(&gfx_sv);
+
     boot_core1();
 
     printf("\n[INIT] USB...\n");
@@ -381,7 +381,7 @@ void main(void)
 
                         if (result == 0) {
                             signal_resume(flags);
-                            fill_fb_black();
+                            fill_fb_black(&gfx_sv);
                             console_clrscr();
                             printf("\n[SUPV] Core 1 resumed.\n");
                         } else if (result == 1) {
@@ -390,7 +390,7 @@ void main(void)
                                 send_exec_guest(&usb_payload);
                             }
                             signal_resume(flags);
-                            fill_fb_black();
+                            fill_fb_black(&gfx_sv);
                             console_clrscr();
                             printf("\n  Guest loaded. Press Guide for menu.\n");
                         } else if (result == 3) {
