@@ -6,6 +6,7 @@
 #include <time/time.h>
 #include <libfat/fat.h>
 #include <xenon_smc/xenon_smc.h>
+#include <xenon_soc/xenon_power.h>
 #include <xenos/xenos.h>
 #include <xenos/xe.h>
 #include <xenos/edram.h>
@@ -20,6 +21,7 @@
 
 extern volatile uint32_t wait[];
 extern void core1_process_engine(void);
+extern void wakeup_cpus(void);
 
 #define CORE1_STACK_TOP   0x807E0000UL
 #define PIR_SPR           1023
@@ -43,6 +45,40 @@ extern void core1_process_engine(void);
 #define CLOCK_SY         32
 #define CLOCK_SW         180
 #define CLOCK_SH         56
+
+/* ── ARGB ↔ RGBA byte-order conversion (Guest ARGB vs Supervisor RGBA) ── */
+static inline uint32_t argb_to_rgba(uint32_t p)
+{
+    uint8_t a = (p >> 24) & 0xFF;
+    uint8_t r = (p >> 16) & 0xFF;
+    uint8_t g = (p >> 8) & 0xFF;
+    uint8_t b = p & 0xFF;
+    return (r << 24) | (g << 16) | (b << 8) | a;
+}
+
+static inline uint32_t rgba_to_argb(uint32_t p)
+{
+    uint8_t r = (p >> 24) & 0xFF;
+    uint8_t g = (p >> 16) & 0xFF;
+    uint8_t b = (p >> 8) & 0xFF;
+    uint8_t a = p & 0xFF;
+    return (a << 24) | (r << 16) | (g << 8) | b;
+}
+
+/* ── Input repeat state machine ── */
+#define TB_PER_US        800
+#define INITIAL_HOLD_MS  500
+#define REPEAT_INTERVAL_MS 100
+#define INITIAL_HOLD_TICKS  ((uint64_t)INITIAL_HOLD_MS * 1000 * TB_PER_US)
+#define REPEAT_TICKS        ((uint64_t)REPEAT_INTERVAL_MS * 1000 * TB_PER_US)
+#define LS_DEADZONE       15000
+
+static inline uint64_t tb_ticks(void)
+{
+    uint32_t tbl, tbu;
+    __asm__ volatile("mftbu %0; mftb %1" : "=r"(tbu), "=r"(tbl) : : "memory");
+    return ((uint64_t)tbu << 32) | tbl;
+}
 
 static const char *menu_labels[MENU_ITEMS] = {
     "Resume Game",
@@ -91,30 +127,6 @@ static void update_pads_and_gen(void)
     __asm__ volatile("sync" : : : "memory");
 }
 
-static void signal_pause(volatile IpcStateFlags *flags)
-{
-    flags->out.target_action = STATE_PAUSE;
-    cache_flush_range(&flags->out.target_action, sizeof(uint32_t));
-    ppc_sync();
-
-    uint32_t timeout = 2000000;
-    while (flags->in.current_state != STATE_PAUSED && timeout--) {
-        cache_inval_line(&flags->in.current_state);
-    }
-}
-
-static void signal_resume(volatile IpcStateFlags *flags)
-{
-    flags->out.target_action = STATE_RESUME;
-    cache_flush_range(&flags->out.target_action, sizeof(uint32_t));
-    ppc_sync();
-
-    uint32_t timeout = 2000000;
-    while (flags->in.current_state != STATE_POLLING && timeout--) {
-        cache_inval_line(&flags->in.current_state);
-    }
-}
-
 static uint32_t guide_backup[BLADE_W * 720] __attribute__((aligned(128)));
 static uint32_t clock_backup[CLOCK_SW * CLOCK_SH] __attribute__((aligned(128)));
 
@@ -123,11 +135,11 @@ static void restore_blade_and_clock(const GfxCtx *gfx)
     for (int row = 0; row < gfx->height; row++)
         for (int col = 0; col < BLADE_W; col++)
             gfx->fb[gfx_tile_idx(col, row, gfx->stride)] =
-                guide_backup[row * BLADE_W + col];
+                rgba_to_argb(guide_backup[row * BLADE_W + col]);
     for (int row = 0; row < CLOCK_SH; row++)
         for (int col = 0; col < CLOCK_SW; col++)
             gfx->fb[gfx_tile_idx(CLOCK_SX + col, CLOCK_SY + row, gfx->stride)] =
-                clock_backup[row * CLOCK_SW + col];
+                rgba_to_argb(clock_backup[row * CLOCK_SW + col]);
     gfx_flush(gfx);
 }
 
@@ -161,11 +173,11 @@ static int run_guide_menu(const GfxCtx *gfx)
     for (int row = 0; row < gfx->height; row++)
         for (int col = 0; col < BLADE_W; col++)
             guide_backup[row * BLADE_W + col] =
-                gfx->fb[gfx_tile_idx(col, row, gfx->stride)];
+                argb_to_rgba(gfx->fb[gfx_tile_idx(col, row, gfx->stride)]);
     for (int row = 0; row < CLOCK_SH; row++)
         for (int col = 0; col < CLOCK_SW; col++)
             clock_backup[row * CLOCK_SW + col] =
-                gfx->fb[gfx_tile_idx(CLOCK_SX + col, CLOCK_SY + row, gfx->stride)];
+                argb_to_rgba(gfx->fb[gfx_tile_idx(CLOCK_SX + col, CLOCK_SY + row, gfx->stride)]);
 
     gfx_fill_rect(gfx, 0, 0, BLADE_W, gfx->height, PAL_BLADE_BG);
     gfx_fill_rect(gfx, BLADE_W - 1, 0, 1, gfx->height, PAL_ACCENT);
@@ -185,19 +197,22 @@ static int run_guide_menu(const GfxCtx *gfx)
 
     int selection = 0;
     int prev_up = 0, prev_down = 0, prev_logo = 0, prev_a = 0;
+    int ls_up_prev = 0, ls_down_prev = 0;
+    int active_dir = 0, repeat_phase = 0;
+    uint64_t hold_start = 0, last_repeat = 0;
     int dirty = 1;
     time_t last_clock = time(NULL);
 
     while (1) {
         usb_do_poll();
 
-        time_t now = time(NULL);
-        if (now != last_clock) {
-            last_clock = now;
+        time_t now_sec = time(NULL);
+        if (now_sec != last_clock) {
+            last_clock = now_sec;
             for (int row = 0; row < CLOCK_SH; row++)
                 for (int col = 0; col < CLOCK_SW; col++)
                     gfx->fb[gfx_tile_idx(CLOCK_SX + col, CLOCK_SY + row, gfx->stride)] =
-                        clock_backup[row * CLOCK_SW + col];
+                        rgba_to_argb(clock_backup[row * CLOCK_SW + col]);
             draw_clock(gfx);
             {
                 uint32_t b = (uint32_t)gfx->fb + CLOCK_SY * gfx->stride * gfx->bpp;
@@ -234,35 +249,92 @@ static int run_guide_menu(const GfxCtx *gfx)
             dirty = 0;
         }
 
+        int want_up = 0, want_down = 0;
+        struct controller_data_s pad;
+        memset(&pad, 0, sizeof(pad));
         for (int port = 0; port < NUM_CONTROLLERS; port++) {
-            struct controller_data_s pad;
-            get_controller_data(&pad, port);
+            struct controller_data_s raw;
+            get_controller_data(&raw, port);
+            if (raw.logo || raw.a || raw.up || raw.down ||
+                raw.left || raw.right || raw.s1_y || raw.s1_x)
+                pad = raw;
+        }
 
-            if (pad.logo && !prev_logo) {
-                restore_blade_and_clock(gfx);
-                return -1;
-            }
+        if (pad.logo && !prev_logo) {
+            restore_blade_and_clock(gfx);
+            return -1;
+        }
+        if (pad.a && !prev_a) {
+            restore_blade_and_clock(gfx);
+            return selection;
+        }
 
-            if (pad.up && !prev_up && selection > 0) {
-                selection--;
-                dirty = 1;
-                udelay(50000);
-            }
-            if (pad.down && !prev_down && selection < MENU_ITEMS - 1) {
-                selection++;
-                dirty = 1;
-                udelay(50000);
-            }
+        int ls_up = (pad.s1_y < -LS_DEADZONE);
+        int ls_down = (pad.s1_y > LS_DEADZONE);
+        int held_up = pad.up || ls_up;
+        int held_down = pad.down || ls_down;
 
-            if (pad.a && !prev_a) {
-                restore_blade_and_clock(gfx);
-                return selection;
-            }
+        if (pad.up && !prev_up) want_up = 1;
+        if (pad.down && !prev_down) want_down = 1;
+        if (ls_up && !ls_up_prev) want_up = 1;
+        if (ls_down && !ls_down_prev) want_down = 1;
 
-            prev_up    = pad.up;
-            prev_down  = pad.down;
-            prev_a     = pad.a;
-            prev_logo  = pad.logo;
+        if (want_up || want_down) {
+            active_dir = want_up ? -1 : 1;
+            hold_start = tb_ticks();
+            last_repeat = hold_start;
+            repeat_phase = 0;
+            if (want_up && selection > 0) { selection--; dirty = 1; }
+            if (want_down && selection < MENU_ITEMS - 1) { selection++; dirty = 1; }
+        }
+
+        if (active_dir != 0) {
+            int still = (active_dir == -1 && held_up) || (active_dir == 1 && held_down);
+            if (!still) {
+                active_dir = 0;
+                repeat_phase = 0;
+            } else {
+                uint64_t n = tb_ticks();
+                uint64_t elapsed = n - hold_start;
+                if (!repeat_phase) {
+                    if (elapsed >= INITIAL_HOLD_TICKS) {
+                        repeat_phase = 1;
+                        last_repeat = n;
+                        if (active_dir == -1 && selection > 0) { selection--; dirty = 1; }
+                        if (active_dir == 1 && selection < MENU_ITEMS - 1) { selection++; dirty = 1; }
+                    }
+                } else {
+                    if (n - last_repeat >= REPEAT_TICKS) {
+                        last_repeat += REPEAT_TICKS;
+                        if (active_dir == -1 && selection > 0) { selection--; dirty = 1; }
+                        if (active_dir == 1 && selection < MENU_ITEMS - 1) { selection++; dirty = 1; }
+                    }
+                }
+            }
+        }
+
+        prev_up    = pad.up;
+        prev_down  = pad.down;
+        prev_a     = pad.a;
+        prev_logo  = pad.logo;
+        ls_up_prev = ls_up;
+        ls_down_prev = ls_down;
+
+        if (dirty) {
+            char dbg[64];
+            int dy = 40 + MENU_ITEMS * 28 + 8 + 18;
+            snprintf(dbg, sizeof(dbg), "U:%d D:%d L:%d R:%d Y:%d",
+                     pad.up, pad.down, pad.left, pad.right, pad.s1_y);
+            gfx_fill_rect(gfx, 8, dy - 2, BLADE_W - 16, 20, PAL_BLADE_BG);
+            gfx_draw_str(gfx, 16, dy, dbg, PAL_TEXT_HINT, 0, 0);
+            {
+                uint32_t b = (uint32_t)gfx->fb;
+                uint32_t e = b + BLADE_W * gfx->height * 4;
+                for (uint32_t p = b & ~0x7F; p < e; p += 128)
+                    __asm__ volatile("dcbf 0, %0" : : "r"(p) : "memory");
+                __asm__ volatile("sync" : : : "memory");
+            }
+            dirty = 0;
         }
 
         __asm__ volatile("or 27, 27, 27");
@@ -422,26 +494,33 @@ static void service_loop(GfxCtx *gfx, ElfExecPayload *usb_payload)
 
             if (pad.logo && !guide_prev[port]) {
                 if (!menu_open) {
-                    signal_pause(flags);
-                    if (flags->in.current_state == STATE_PAUSED) {
-                        menu_open = 1;
-                        int result = run_guide_menu(gfx);
+                    flags->out.target_action = STATE_PAUSE;
+                    cache_flush_range(&flags->out.target_action, sizeof(uint32_t));
+                    ppc_sync();
+                    xenon_sleep_thread(1);
+                    ppc_sync();
 
-                        if (result == 0) {
-                            signal_resume(flags);
-                        } else if (result == 1) {
-                            if (load_guest_from_usb(usb_payload) == 0) {
-                                update_pads_and_gen();
-                                send_exec_guest(usb_payload);
-                            }
-                            signal_resume(flags);
-                            gfx_clear(gfx, 0x000000FF);
-                            gfx_flush(gfx);
-                        } else if (result == 3) {
-                            execute_exit_to_xell();
+                    menu_open = 1;
+                    int result = run_guide_menu(gfx);
+
+                    wakeup_cpus();
+                    ppc_sync();
+                    flags->out.target_action = STATE_RESUME;
+                    cache_flush_range(&flags->out.target_action, sizeof(uint32_t));
+                    ppc_sync();
+                    if (result == 0) {
+                        /* resume */
+                    } else if (result == 1) {
+                        if (load_guest_from_usb(usb_payload) == 0) {
+                            update_pads_and_gen();
+                            send_exec_guest(usb_payload);
                         }
-                        menu_open = 0;
+                        gfx_clear(gfx, 0x000000FF);
+                        gfx_flush(gfx);
+                    } else if (result == 3) {
+                        execute_exit_to_xell();
                     }
+                    menu_open = 0;
                 }
             }
             guide_prev[port] = pad.logo;
