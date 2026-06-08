@@ -13,6 +13,7 @@
 #include <console/console.h>
 #include <usb/usbmain.h>
 #include <input/input.h>
+#include <sys/dirent.h>
 #include "system_memory_map.h"
 #include "ipc_ring.h"
 #include "barrier.h"
@@ -449,6 +450,115 @@ static void clear_vfb(void)
     __asm__ volatile("sync" : : : "memory");
 }
 
+#define MAX_APPS 32
+
+typedef struct {
+    char id[48];
+    char name[64];
+    char author[64];
+    uint32_t version;
+} AppMeta;
+
+static AppMeta app_cache[MAX_APPS];
+static int app_count;
+
+static char *json_strval(const char *json, const char *key, char *buf, int buf_len)
+{
+    const char *p = json;
+    while ((p = strstr(p, key)) != NULL) {
+        if (p > json && *(p - 1) == '"' && *(p + strlen(key)) == '"') {
+            const char *v = p + strlen(key) + 1;
+            while (*v == ' ' || *v == '\t') v++;
+            if (*v == ':') {
+                v++;
+                while (*v == ' ' || *v == '\t') v++;
+                if (*v == '"') {
+                    v++;
+                    int i = 0;
+                    while (*v && *v != '"' && i < buf_len - 1)
+                        buf[i++] = *v++;
+                    buf[i] = '\0';
+                    return buf;
+                }
+            }
+        }
+        p++;
+    }
+    return NULL;
+}
+
+static uint32_t json_intval(const char *json, const char *key)
+{
+    const char *p = strstr(json, key);
+    if (!p) return 0;
+    p = strchr(p, ':');
+    if (!p) return 0;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+    return (uint32_t)atoi(p);
+}
+
+static void parse_manifest(const char *path, AppMeta *meta)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    if (len < 16 || len > 4096) { fclose(f); return; }
+    fseek(f, 0, SEEK_SET);
+
+    char *buf = malloc((size_t)len + 1);
+    if (!buf) { fclose(f); return; }
+    if (fread(buf, 1, (size_t)len, f) != (size_t)len) {
+        free(buf); fclose(f); return;
+    }
+    buf[len] = '\0';
+    fclose(f);
+
+    json_strval(buf, "id",     meta->id,     sizeof(meta->id));
+    json_strval(buf, "name",   meta->name,   sizeof(meta->name));
+    json_strval(buf, "author", meta->author, sizeof(meta->author));
+    meta->version = json_intval(buf, "version");
+
+    free(buf);
+}
+
+static void scan_apps(void)
+{
+    app_count = 0;
+    memset(app_cache, 0, sizeof(app_cache));
+
+    DIR *dir = opendir("uda:/apps");
+    if (!dir) {
+        printf("[APPS] No apps directory.\n");
+        return;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL && app_count < MAX_APPS) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+            continue;
+
+        char mpath[320];
+        snprintf(mpath, sizeof(mpath), "uda:/apps/%s/manifest.json", entry->d_name);
+
+        AppMeta meta;
+        memset(&meta, 0, sizeof(meta));
+        parse_manifest(mpath, &meta);
+
+        if (meta.id[0])
+            app_cache[app_count++] = meta;
+    }
+    closedir(dir);
+
+    printf("[APPS] Found %d app(s):\n", app_count);
+    for (int i = 0; i < app_count; i++)
+        printf("  [%d] %s — %s v%u by %s\n",
+               i, app_cache[i].id, app_cache[i].name,
+               app_cache[i].version, app_cache[i].author);
+}
+
 static void service_loop(GfxCtx *gfx, ElfExecPayload *usb_payload)
 {
     int menu_open = 0;
@@ -588,6 +698,7 @@ void main(void)
         udelay(10000);
     }
     fatInitDefault();
+    scan_apps();
 
     printf("[SUPV] Ready. Press Guide for menu.\n");
 
