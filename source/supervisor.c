@@ -46,24 +46,6 @@ extern void wakeup_cpus(void);
 #define CLOCK_SW         180
 #define CLOCK_SH         56
 
-/* ── ARGB ↔ RGBA byte-order conversion (Guest ARGB vs Supervisor RGBA) ── */
-static inline uint32_t argb_to_rgba(uint32_t p)
-{
-    uint8_t a = (p >> 24) & 0xFF;
-    uint8_t r = (p >> 16) & 0xFF;
-    uint8_t g = (p >> 8) & 0xFF;
-    uint8_t b = p & 0xFF;
-    return (r << 24) | (g << 16) | (b << 8) | a;
-}
-
-static inline uint32_t rgba_to_argb(uint32_t p)
-{
-    uint8_t r = (p >> 24) & 0xFF;
-    uint8_t g = (p >> 16) & 0xFF;
-    uint8_t b = (p >> 8) & 0xFF;
-    uint8_t a = p & 0xFF;
-    return (a << 24) | (r << 16) | (g << 8) | b;
-}
 
 /* ── Input repeat state machine ── */
 #define TB_PER_US        800
@@ -135,11 +117,11 @@ static void restore_blade_and_clock(const GfxCtx *gfx)
     for (int row = 0; row < gfx->height; row++)
         for (int col = 0; col < BLADE_W; col++)
             gfx->fb[gfx_tile_idx(col, row, gfx->stride)] =
-                rgba_to_argb(guide_backup[row * BLADE_W + col]);
+                guide_backup[row * BLADE_W + col];
     for (int row = 0; row < CLOCK_SH; row++)
         for (int col = 0; col < CLOCK_SW; col++)
             gfx->fb[gfx_tile_idx(CLOCK_SX + col, CLOCK_SY + row, gfx->stride)] =
-                rgba_to_argb(clock_backup[row * CLOCK_SW + col]);
+                clock_backup[row * CLOCK_SW + col];
     gfx_flush(gfx);
 }
 
@@ -173,11 +155,11 @@ static int run_guide_menu(const GfxCtx *gfx)
     for (int row = 0; row < gfx->height; row++)
         for (int col = 0; col < BLADE_W; col++)
             guide_backup[row * BLADE_W + col] =
-                argb_to_rgba(gfx->fb[gfx_tile_idx(col, row, gfx->stride)]);
+                gfx->fb[gfx_tile_idx(col, row, gfx->stride)];
     for (int row = 0; row < CLOCK_SH; row++)
         for (int col = 0; col < CLOCK_SW; col++)
             clock_backup[row * CLOCK_SW + col] =
-                argb_to_rgba(gfx->fb[gfx_tile_idx(CLOCK_SX + col, CLOCK_SY + row, gfx->stride)]);
+                gfx->fb[gfx_tile_idx(CLOCK_SX + col, CLOCK_SY + row, gfx->stride)];
 
     gfx_fill_rect(gfx, 0, 0, BLADE_W, gfx->height, PAL_BLADE_BG);
     gfx_fill_rect(gfx, BLADE_W - 1, 0, 1, gfx->height, PAL_ACCENT);
@@ -212,7 +194,7 @@ static int run_guide_menu(const GfxCtx *gfx)
             for (int row = 0; row < CLOCK_SH; row++)
                 for (int col = 0; col < CLOCK_SW; col++)
                     gfx->fb[gfx_tile_idx(CLOCK_SX + col, CLOCK_SY + row, gfx->stride)] =
-                        rgba_to_argb(clock_backup[row * CLOCK_SW + col]);
+                        clock_backup[row * CLOCK_SW + col];
             draw_clock(gfx);
             {
                 uint32_t b = (uint32_t)gfx->fb + CLOCK_SY * gfx->stride * gfx->bpp;
@@ -221,32 +203,6 @@ static int run_guide_menu(const GfxCtx *gfx)
                     __asm__ volatile("dcbf 0, %0" : : "r"(p) : "memory");
                 __asm__ volatile("sync" : : : "memory");
             }
-        }
-
-        if (dirty) {
-            for (int i = 0; i < MENU_ITEMS; i++) {
-                int item_y = 40 + i * 28;
-                gfx_fill_rect(gfx, 0, item_y - 2, BLADE_W - 1, 20, PAL_BLADE_BG);
-                if (i == selection) {
-                    gfx_fill_rect(gfx, 8, item_y - 2, BLADE_W - 16, 20, PAL_STRIP_BG);
-                    gfx_draw_str(gfx, 16, item_y, menu_labels[i], PAL_TEXT_SEL, 0, 0);
-                } else {
-                    gfx_draw_str(gfx, 16, item_y, menu_labels[i], PAL_TEXT_UNSEL, 0, 0);
-                }
-            }
-
-            gfx_draw_str(gfx, 16, 40 + MENU_ITEMS * 28 + 8,
-                         "A=Select  Guide=Close", PAL_TEXT_HINT, 0, 0);
-
-            {
-                uint32_t b = (uint32_t)gfx->fb;
-                uint32_t e = b + BLADE_W * gfx->height * 4;
-                for (uint32_t p = b & ~0x7F; p < e; p += 128)
-                    __asm__ volatile("dcbf 0, %0" : : "r"(p) : "memory");
-                __asm__ volatile("sync" : : : "memory");
-            }
-
-            dirty = 0;
         }
 
         int want_up = 0, want_down = 0;
@@ -321,12 +277,27 @@ static int run_guide_menu(const GfxCtx *gfx)
         ls_down_prev = ls_down;
 
         if (dirty) {
+            for (int i = 0; i < MENU_ITEMS; i++) {
+                int item_y = 40 + i * 28;
+                gfx_fill_rect(gfx, 0, item_y - 2, BLADE_W - 1, 20, PAL_BLADE_BG);
+                if (i == selection) {
+                    gfx_fill_rect(gfx, 8, item_y - 2, BLADE_W - 16, 20, PAL_STRIP_BG);
+                    gfx_draw_str(gfx, 16, item_y, menu_labels[i], PAL_TEXT_SEL, 0, 0);
+                } else {
+                    gfx_draw_str(gfx, 16, item_y, menu_labels[i], PAL_TEXT_UNSEL, 0, 0);
+                }
+            }
+
+            gfx_draw_str(gfx, 16, 40 + MENU_ITEMS * 28 + 8,
+                         "A=Select  Guide=Close", PAL_TEXT_HINT, 0, 0);
+
             char dbg[64];
             int dy = 40 + MENU_ITEMS * 28 + 8 + 18;
-            snprintf(dbg, sizeof(dbg), "U:%d D:%d L:%d R:%d Y:%d",
-                     pad.up, pad.down, pad.left, pad.right, pad.s1_y);
+            snprintf(dbg, sizeof(dbg), "U:%d D:%d L:%d R:%d LY:%+05d LX:%+05d",
+                     pad.up, pad.down, pad.left, pad.right, pad.s1_y, pad.s1_x);
             gfx_fill_rect(gfx, 8, dy - 2, BLADE_W - 16, 20, PAL_BLADE_BG);
             gfx_draw_str(gfx, 16, dy, dbg, PAL_TEXT_HINT, 0, 0);
+
             {
                 uint32_t b = (uint32_t)gfx->fb;
                 uint32_t e = b + BLADE_W * gfx->height * 4;
@@ -334,6 +305,7 @@ static int run_guide_menu(const GfxCtx *gfx)
                     __asm__ volatile("dcbf 0, %0" : : "r"(p) : "memory");
                 __asm__ volatile("sync" : : : "memory");
             }
+
             dirty = 0;
         }
 
