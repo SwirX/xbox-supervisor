@@ -26,7 +26,7 @@ extern void core1_process_engine(void);
 #define MENU_ITEMS        4
 #define GUEST_BASE        0x81000000UL
 #define CACHE_LINE_SIZE   128
-#define BLADE_W           360
+#define BLADE_W           320
 
 static const char *menu_labels[MENU_ITEMS] = {
     "Resume Game",
@@ -98,14 +98,7 @@ static void signal_resume(volatile IpcStateFlags *flags)
     }
 }
 
-static void restore_blade_item(const GfxCtx *gfx, const uint32_t *saved, int item_y)
-{
-    for (int row = item_y - 2; row < item_y + 18 && row < gfx->height; row++)
-        for (int col = 0; col < BLADE_W && col < gfx->width; col++) {
-            int fi = gfx_tile_idx(col, row, gfx->stride);
-            gfx->fb[fi] = gfx_alpha_blend(0xBB101010, saved[row * BLADE_W + col], 240);
-        }
-}
+static uint32_t guide_backup[BLADE_W * 720] __attribute__((aligned(128)));
 
 static int run_guide_menu(const GfxCtx *gfx)
 {
@@ -121,20 +114,26 @@ static int run_guide_menu(const GfxCtx *gfx)
         }
     }
 
-    gfx_inval(gfx);
+    for (int row = 0; row < gfx->height; row++)
+        for (int col = 0; col < BLADE_W; col++)
+            guide_backup[row * BLADE_W + col] =
+                gfx->fb[gfx_tile_idx(col, row, gfx->stride)];
 
-    uint32_t *saved = gfx_save_region(gfx, 0, 0, BLADE_W, gfx->height);
-    if (!saved)
-        return -1;
-
-    gfx_fill_rect_alpha(gfx, 0, 0, BLADE_W, gfx->height, 0xBB101010, 240);
+    gfx_fill_rect(gfx, 0, 0, BLADE_W, gfx->height, 0xFF101010);
     gfx_fill_rect(gfx, BLADE_W - 1, 0, 1, gfx->height, 0xFF4488CC);
-    gfx_fill_rect_alpha(gfx, 8, 8, BLADE_W - 16, 24, 0x4488CC, 40);
+    gfx_fill_rect(gfx, 8, 8, BLADE_W - 16, 24, 0xFF1A2A3A);
     gfx_draw_str(gfx, 16, 12, "MENU", 0xFFFFFFFF, 0, 0);
     gfx_fill_rect(gfx, 16, 34, BLADE_W - 32, 1, 0xFF4488CC);
 
+    {
+        uint32_t b = (uint32_t)gfx->fb;
+        uint32_t e = b + gfx->stride * gfx->height * gfx->bpp;
+        for (uint32_t p = b & ~0x7F; p < e; p += 128)
+            __asm__ volatile("dcbf 0, %0" : : "r"(p) : "memory");
+        __asm__ volatile("sync" : : : "memory");
+    }
+
     int selection = 0;
-    int prev_selection = -1;
     int prev_up = 0, prev_down = 0, prev_logo = 0, prev_a = 0;
     int dirty = 1;
 
@@ -142,21 +141,28 @@ static int run_guide_menu(const GfxCtx *gfx)
         usb_do_poll();
 
         if (dirty) {
-            if (prev_selection >= 0)
-                restore_blade_item(gfx, saved, 40 + prev_selection * 28);
-
-            int ny = 40 + selection * 28;
-            restore_blade_item(gfx, saved, ny);
-            gfx_fill_rect_alpha(gfx, 8, ny - 2, BLADE_W - 16, 20, 0x4488CC, 102);
-            gfx_draw_str(gfx, 16, ny, menu_labels[selection], 0xFFFFFFFF, 0, 0);
-            if (prev_selection >= 0 && prev_selection != selection)
-                gfx_draw_str(gfx, 16, 40 + prev_selection * 28,
-                             menu_labels[prev_selection], 0xFF888888, 0, 0);
+            for (int i = 0; i < MENU_ITEMS; i++) {
+                int item_y = 40 + i * 28;
+                gfx_fill_rect(gfx, 0, item_y - 2, BLADE_W - 1, 20, 0xFF101010);
+                if (i == selection) {
+                    gfx_fill_rect(gfx, 8, item_y - 2, BLADE_W - 16, 20, 0xFF2A4A6A);
+                    gfx_draw_str(gfx, 16, item_y, menu_labels[i], 0xFFFFFFFF, 0, 0);
+                } else {
+                    gfx_draw_str(gfx, 16, item_y, menu_labels[i], 0xFF888888, 0, 0);
+                }
+            }
 
             gfx_draw_str(gfx, 16, 40 + MENU_ITEMS * 28 + 8,
                          "A=Select  Guide=Close", 0xFF666666, 0, 0);
 
-            prev_selection = selection;
+            {
+                uint32_t b = (uint32_t)gfx->fb;
+                uint32_t e = b + BLADE_W * gfx->height * 4;
+                for (uint32_t p = b & ~0x7F; p < e; p += 128)
+                    __asm__ volatile("dcbf 0, %0" : : "r"(p) : "memory");
+                __asm__ volatile("sync" : : : "memory");
+            }
+
             dirty = 0;
         }
 
@@ -165,9 +171,11 @@ static int run_guide_menu(const GfxCtx *gfx)
             get_controller_data(&pad, port);
 
             if (pad.logo && !prev_logo) {
-                gfx_restore_region(gfx, 0, 0, saved, BLADE_W, gfx->height);
+                for (int row = 0; row < gfx->height; row++)
+                    for (int col = 0; col < BLADE_W; col++)
+                        gfx->fb[gfx_tile_idx(col, row, gfx->stride)] =
+                            guide_backup[row * BLADE_W + col];
                 gfx_flush(gfx);
-                free(saved);
                 return -1;
             }
 
@@ -183,9 +191,11 @@ static int run_guide_menu(const GfxCtx *gfx)
             }
 
             if (pad.a && !prev_a) {
-                gfx_restore_region(gfx, 0, 0, saved, BLADE_W, gfx->height);
+                for (int row = 0; row < gfx->height; row++)
+                    for (int col = 0; col < BLADE_W; col++)
+                        gfx->fb[gfx_tile_idx(col, row, gfx->stride)] =
+                            guide_backup[row * BLADE_W + col];
                 gfx_flush(gfx);
-                free(saved);
                 return selection;
             }
 

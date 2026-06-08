@@ -91,6 +91,11 @@ static inline void gfx_draw_int(const GfxCtx *ctx, int x, int y, int val,
     gfx_draw_str(ctx, x, y, buf, fg, bg, 48);
 }
 
+static inline uint32_t gfx_pack_color(uint8_t r, uint8_t g, uint8_t b)
+{
+    return (0xFF << 24) | (r << 16) | (g << 8) | b;
+}
+
 static inline uint32_t gfx_alpha_blend(uint32_t src, uint32_t dst, uint8_t a)
 {
     uint8_t inv = 255 - a;
@@ -108,19 +113,6 @@ static inline void gfx_fill_rect_alpha(const GfxCtx *ctx, int x, int y, int w, i
             int i = gfx_tile_idx(col, row, ctx->stride);
             ctx->fb[i] = gfx_alpha_blend(color, ctx->fb[i], alpha);
         }
-}
-
-static inline void gfx_inval(const GfxCtx *ctx)
-{
-    uint32_t base = (uint32_t)ctx->fb;
-    uint32_t size = ctx->height * ctx->stride * ctx->bpp;
-    uint32_t p = base & ~0x7F;
-    uint32_t end = base + size;
-    while (p < end) {
-        __asm__ volatile("dcbf 0, %0" : : "r"(p) : "memory");
-        p += 128;
-    }
-    __asm__ volatile("sync" : : : "memory");
 }
 
 static inline uint32_t *gfx_save_region(const GfxCtx *ctx, int x, int y, int w, int h)
