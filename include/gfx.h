@@ -110,6 +110,19 @@ static inline void gfx_fill_rect_alpha(const GfxCtx *ctx, int x, int y, int w, i
         }
 }
 
+static inline void gfx_inval(const GfxCtx *ctx)
+{
+    uint32_t base = (uint32_t)ctx->fb;
+    uint32_t size = ctx->height * ctx->stride * ctx->bpp;
+    uint32_t p = base & ~0x7F;
+    uint32_t end = base + size;
+    while (p < end) {
+        __asm__ volatile("dcbi 0, %0" : : "r"(p) : "memory");
+        p += 128;
+    }
+    __asm__ volatile("sync" : : : "memory");
+}
+
 static inline uint32_t *gfx_save_region(const GfxCtx *ctx, int x, int y, int w, int h)
 {
     uint32_t *buf = (uint32_t *)malloc(w * h * sizeof(uint32_t));
