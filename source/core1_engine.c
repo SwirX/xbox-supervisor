@@ -42,11 +42,9 @@ void __attribute__((noreturn)) core1_process_engine(void)
     while (1) {
         flags->in.core1_heartbeat++;
 
+        cache_inval_line(&flags->out.target_action);
         if (flags->out.target_action == STATE_PAUSE) {
-            cache_inval_line(&flags->out.target_action);
-            if (flags->out.target_action == STATE_PAUSE) {
-                handle_pause(flags);
-            }
+            handle_pause(flags);
         }
 
         __asm__ volatile("dcbf 0, %0" : : "r"((uint32_t)IPC_CMD_RING_ADDR & ~0x7F));

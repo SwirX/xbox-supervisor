@@ -2,6 +2,7 @@
 #include <input/input.h>
 #include <gfx.h>
 #include <xenos/xenos.h>
+#include "system_memory_map.h"
 
 #define IPC_INPUT_GEN    ((volatile uint32_t *)0x807FFCFCUL)
 #define IPC_SHARED_PAD ((volatile uint32_t *)0x807FFD00UL)
@@ -20,16 +21,30 @@ static struct controller_data_s read_pad(void)
     return pad;
 }
 
-static void wait_a_released(void)
+static int should_exit(void)
 {
-    struct controller_data_s pad;
-    do { pad = read_pad(); } while (pad.a);
+    __asm__ volatile("dcbf 0, %0; sync; isync" : : "r"(IPC_FLAGS_ADDR) : "memory");
+    return IPC_FLAGS_ADDR->out.target_action == STATE_PAUSE;
 }
 
-static void wait_a_pressed(void)
+static int wait_a_released(void)
 {
     struct controller_data_s pad;
-    do { pad = read_pad(); } while (!pad.a);
+    do {
+        pad = read_pad();
+        if (should_exit()) return -1;
+    } while (pad.a);
+    return 0;
+}
+
+static int wait_a_pressed(void)
+{
+    struct controller_data_s pad;
+    do {
+        pad = read_pad();
+        if (should_exit()) return -1;
+    } while (!pad.a);
+    return 0;
 }
 
 int main(void)
@@ -39,23 +54,20 @@ int main(void)
 
     /* ── Test 1: Full-screen colors ── */
 
-    /* RED */
     gfx_clear(&gfx, 0xFF0000FF);
     gfx_flush(&gfx);
-    wait_a_released();
-    wait_a_pressed();
+    if (wait_a_released() < 0) return 1;
+    if (wait_a_pressed() < 0) return 1;
 
-    /* GREEN */
     gfx_clear(&gfx, 0x00FF00FF);
     gfx_flush(&gfx);
-    wait_a_released();
-    wait_a_pressed();
+    if (wait_a_released() < 0) return 1;
+    if (wait_a_pressed() < 0) return 1;
 
-    /* BLUE */
     gfx_clear(&gfx, 0x0000FFFF);
     gfx_flush(&gfx);
-    wait_a_released();
-    wait_a_pressed();
+    if (wait_a_released() < 0) return 1;
+    if (wait_a_pressed() < 0) return 1;
 
     /* ── Test 2: Static "HELLO" once, never redraw ── */
 
@@ -63,14 +75,15 @@ int main(void)
     gfx_draw_str(&gfx, 20, 10, "HELLO", 0xFFFFFFFF, 0x202025FF, 200);
     gfx_flush(&gfx);
 
-    /* Spin — no framebuffer writes, wait for A to advance */
-    wait_a_released();
-    wait_a_pressed();
+    if (wait_a_released() < 0) return 1;
+    if (wait_a_pressed() < 0) return 1;
 
     /* ── Test 3: Solid rectangle every frame ── */
 
     while (1) {
         struct controller_data_s pad = read_pad();
+
+        if (should_exit()) return 1;
 
         gfx_clear(&gfx, 0x202025FF);
 

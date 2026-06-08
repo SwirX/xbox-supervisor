@@ -30,7 +30,9 @@ int ipc_ring_push(volatile IpcRingBuffer *ring, const IpcPacket *packet)
 
 int ipc_ring_pop(volatile IpcRingBuffer *ring, IpcPacket *out_packet)
 {
+    cache_inval_line((void *)&ring->head);
     uint32_t head = ring->head;
+    cache_inval_line((void *)&ring->tail);
     uint32_t tail = ring->tail;
 
     if (tail == head)

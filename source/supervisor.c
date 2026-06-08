@@ -367,9 +367,6 @@ static int load_guest_from_usb(ElfExecPayload *out)
 
 static void send_exec_guest(ElfExecPayload *payload)
 {
-    IPC_FLAGS_ADDR->out.supervisor_status = 0;
-    cache_flush_range(&IPC_FLAGS_ADDR->out.supervisor_status, sizeof(uint32_t));
-
     IpcPacket cmd;
     memset(&cmd, 0, sizeof(cmd));
     cmd.cmd_type    = CMD_EXEC_GUEST;
@@ -377,21 +374,6 @@ static void send_exec_guest(ElfExecPayload *payload)
     memcpy(cmd.payload, payload, sizeof(ElfExecPayload));
 
     while (!ipc_ring_push((IpcRingBuffer *)IPC_CMD_RING_ADDR, &cmd));
-
-    uint32_t magic;
-    uint32_t timeout = 2000000;
-    do {
-        cache_inval_line(&IPC_FLAGS_ADDR->out.supervisor_status);
-        magic = IPC_FLAGS_ADDR->out.supervisor_status;
-    } while (magic == 0 && timeout--);
-
-    if (magic == 0xDEADBEEF) {
-        printf("  Guest OK (0x%08X)\n", magic);
-    } else if (magic != 0) {
-        printf("  Guest resp 0x%08X\n", magic);
-    } else {
-        printf("  Guest timeout\n");
-    }
 }
 
 static void execute_exit_to_xell(void)
@@ -424,17 +406,36 @@ static void service_loop(GfxCtx *gfx, ElfExecPayload *usb_payload)
                     flags->out.target_action = STATE_PAUSE;
                     cache_flush_range(&flags->out.target_action, sizeof(uint32_t));
                     ppc_sync();
-                    xenon_sleep_thread(1);
-                    ppc_sync();
+
+                    int pause_ok = 0;
+                    uint32_t pa_to = 2000000;
+                    while (pa_to--) {
+                        cache_inval_line(&flags->in.current_state);
+                        if (flags->in.current_state == STATE_PAUSED) {
+                            pause_ok = 1;
+                            break;
+                        }
+                        __asm__ volatile("or 27, 27, 27");
+                    }
+
+                    if (!pause_ok)
+                        xenon_sleep_thread(1);
 
                     menu_open = 1;
                     int result = run_guide_menu(gfx);
 
-                    wakeup_cpus();
-                    ppc_sync();
-                    flags->out.target_action = STATE_RESUME;
-                    cache_flush_range(&flags->out.target_action, sizeof(uint32_t));
-                    ppc_sync();
+                    if (pause_ok) {
+                        flags->out.target_action = STATE_RESUME;
+                        cache_flush_range(&flags->out.target_action, sizeof(uint32_t));
+                        ppc_sync();
+                    } else {
+                        wakeup_cpus();
+                        ppc_sync();
+                        flags->out.target_action = STATE_RESUME;
+                        cache_flush_range(&flags->out.target_action, sizeof(uint32_t));
+                        ppc_sync();
+                    }
+
                     if (result == 0) {
                         /* resume */
                     } else if (result == 1) {
