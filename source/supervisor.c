@@ -49,6 +49,10 @@ extern void wakeup_cpus(void);
 
 #define LS_DEADZONE       15000
 
+/* ── Notification state ── */
+static char notif_text[128];
+static time_t notif_expire;
+
 static const char *menu_labels[MENU_ITEMS] = {
     "Resume Game",
     "Load from USB",
@@ -383,20 +387,60 @@ static void execute_exit_to_xell(void)
     xenon_smc_power_reboot();
 }
 
+static void dispatch_packet(IpcPacket *pkt)
+{
+    switch (pkt->cmd_type) {
+    case SVC_NOTIFY: {
+        strncpy(notif_text, (char *)pkt->payload, sizeof(notif_text) - 1);
+        notif_text[sizeof(notif_text) - 1] = '\0';
+        notif_expire = time(NULL) + 4;
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+static void dispatch_services(void)
+{
+    IpcPacket pkt;
+    int processed = 0;
+    while (processed < MAX_SERVICE_CALLS_PER_TICK &&
+           ipc_ring_pop((IpcRingBuffer *)IPC_RES_RING_ADDR, &pkt))
+    {
+        dispatch_packet(&pkt);
+        processed++;
+    }
+}
+
 static void composite_vfb(const GfxCtx *gfx)
 {
-    if (*VFB_DIRTY_ADDR == 0)
+    int dirty = *VFB_DIRTY_ADDR;
+    int has_notif = notif_expire && time(NULL) < notif_expire;
+
+    if (!dirty && !has_notif)
         return;
 
-    uint32_t *vfb = (uint32_t *)VFB_BASE;
-    uint32_t count = gfx->stride * gfx->height;
-    for (uint32_t i = 0; i < count; i++)
-        gfx->fb[i] = vfb[i];
+    if (dirty) {
+        uint32_t *vfb = (uint32_t *)VFB_BASE;
+        uint32_t count = gfx->stride * gfx->height;
+        for (uint32_t i = 0; i < count; i++)
+            gfx->fb[i] = vfb[i];
+    }
+
+    if (has_notif) {
+        gfx_fill_rect(gfx, 0, 0, gfx->width, 32, 0x000000BB);
+        gfx_draw_str(gfx, 16, 8, notif_text, 0xFFFFFFFF, 0x00000000, 0);
+    } else {
+        notif_expire = 0;
+    }
 
     gfx_flush(gfx);
 
-    *VFB_DIRTY_ADDR = 0;
-    __asm__ volatile("sync" : : : "memory");
+    if (dirty) {
+        *VFB_DIRTY_ADDR = 0;
+        __asm__ volatile("sync" : : : "memory");
+    }
 }
 
 static void clear_vfb(void)
@@ -483,6 +527,7 @@ static void service_loop(GfxCtx *gfx, ElfExecPayload *usb_payload)
         *IPC_INPUT_GEN_ADDR = *IPC_INPUT_GEN_ADDR + 1;
         __asm__ volatile("sync" : : : "memory");
 
+        dispatch_services();
         composite_vfb(gfx);
 
         __asm__ volatile("or 27, 27, 27");

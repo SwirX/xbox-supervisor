@@ -1,8 +1,22 @@
 #include <stdint.h>
+#include <string.h>
 #include <input/input.h>
 #include <gfx.h>
 #include <xenos/xenos.h>
 #include "system_memory_map.h"
+#include "barrier.h"
+
+static int ring_push(volatile IpcRingBuffer *ring, const IpcPacket *pkt)
+{
+    uint32_t head = ring->head;
+    uint32_t tail = ring->tail;
+    if (((head + 1) & 15) == tail)
+        return 0;
+    ring->slots[head] = *pkt;
+    ppc_sync();
+    ring->head = (head + 1) & 15;
+    return 1;
+}
 
 #define IPC_INPUT_GEN    ((volatile uint32_t *)0x807FFCFCUL)
 #define IPC_SHARED_PAD ((volatile uint32_t *)0x807FFD00UL)
@@ -116,6 +130,12 @@ int main(void)
     gfx_clear(&gfx, 0x000044FF);
     gfx_draw_str(&gfx, 20, 40, "EXITED", 0xFFFFFFFF, 0x000044FF, 100);
     gfx_flush(&gfx); vfb_present();
+
+    IpcPacket npkt;
+    memset(&npkt, 0, sizeof(npkt));
+    npkt.cmd_type = SVC_NOTIFY;
+    memcpy(npkt.payload, "Xenolith ready", 14);
+    while (!ring_push((IpcRingBuffer *)IPC_RES_RING_ADDR, &npkt));
 
     return 0;
 }

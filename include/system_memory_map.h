@@ -91,4 +91,26 @@ typedef struct {
 #define CMD_VERIFY_GUEST  0x10
 #define CMD_EXEC_GUEST    0x11
 
+/* ── Xenolith service calls (app → supervisor via res_ring) ── */
+#define XENOLITH_API_VERSION 1
+
+typedef enum {
+    XL_OK = 0,
+    XL_ERR_NOT_FOUND,
+    XL_ERR_INVALID,
+    XL_ERR_IO,
+    XL_ERR_PERMISSION,
+    XL_ERR_BUSY
+} XlResult;
+
+#define SVC_NOTIFY        0x20
+#define SVC_GET_TIME      0x21
+#define SVC_GET_INPUT     0x22
+#define SVC_LAUNCH_APP    0x23
+#define SVC_SHUTDOWN      0x24
+#define SVC_GET_SETTING   0x26
+#define SVC_SET_SETTING   0x27
+
+#define MAX_SERVICE_CALLS_PER_TICK 8
+
 #endif /* SYSTEM_MEMORY_MAP_H */
