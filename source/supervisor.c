@@ -47,20 +47,7 @@ extern void wakeup_cpus(void);
 #define CLOCK_SH         56
 
 
-/* ── Input repeat state machine ── */
-#define TB_PER_US        800
-#define INITIAL_HOLD_MS  500
-#define REPEAT_INTERVAL_MS 100
-#define INITIAL_HOLD_TICKS  ((uint64_t)INITIAL_HOLD_MS * 1000 * TB_PER_US)
-#define REPEAT_TICKS        ((uint64_t)REPEAT_INTERVAL_MS * 1000 * TB_PER_US)
 #define LS_DEADZONE       15000
-
-static inline uint64_t tb_ticks(void)
-{
-    uint32_t tbl, tbu;
-    __asm__ volatile("mftbu %0; mftb %1" : "=r"(tbu), "=r"(tbl) : : "memory");
-    return ((uint64_t)tbu << 32) | tbl;
-}
 
 static const char *menu_labels[MENU_ITEMS] = {
     "Resume Game",
@@ -178,10 +165,7 @@ static int run_guide_menu(const GfxCtx *gfx)
     }
 
     int selection = 0;
-    int prev_up = 0, prev_down = 0, prev_logo = 0, prev_a = 0;
-    int ls_up_prev = 0, ls_down_prev = 0;
-    int active_dir = 0, repeat_phase = 0;
-    uint64_t hold_start = 0, last_repeat = 0;
+    int prev_nav_up = 0, prev_nav_down = 0, prev_logo = 0, prev_a = 0;
     int dirty = 1;
     time_t last_clock = time(NULL);
 
@@ -205,7 +189,6 @@ static int run_guide_menu(const GfxCtx *gfx)
             }
         }
 
-        int want_up = 0, want_down = 0;
         struct controller_data_s pad;
         memset(&pad, 0, sizeof(pad));
         for (int port = 0; port < NUM_CONTROLLERS; port++) {
@@ -228,54 +211,17 @@ static int run_guide_menu(const GfxCtx *gfx)
 
         int ls_up = (pad.s1_y < -LS_DEADZONE);
         int ls_down = (pad.s1_y > LS_DEADZONE);
-        int held_up = pad.up || ls_up;
-        int held_down = pad.down || ls_down;
 
-        if (pad.up && !prev_up) want_up = 1;
-        if (pad.down && !prev_down) want_down = 1;
-        if (ls_up && !ls_up_prev) want_up = 1;
-        if (ls_down && !ls_down_prev) want_down = 1;
+        int nav_up = (pad.up || ls_up) && !prev_nav_up;
+        int nav_down = (pad.down || ls_down) && !prev_nav_down;
 
-        if (want_up || want_down) {
-            active_dir = want_up ? -1 : 1;
-            hold_start = tb_ticks();
-            last_repeat = hold_start;
-            repeat_phase = 0;
-            if (want_up && selection > 0) { selection--; dirty = 1; }
-            if (want_down && selection < MENU_ITEMS - 1) { selection++; dirty = 1; }
-        }
+        if (nav_up && selection > 0) { selection--; dirty = 1; }
+        if (nav_down && selection < MENU_ITEMS - 1) { selection++; dirty = 1; }
 
-        if (active_dir != 0) {
-            int still = (active_dir == -1 && held_up) || (active_dir == 1 && held_down);
-            if (!still) {
-                active_dir = 0;
-                repeat_phase = 0;
-            } else {
-                uint64_t n = tb_ticks();
-                uint64_t elapsed = n - hold_start;
-                if (!repeat_phase) {
-                    if (elapsed >= INITIAL_HOLD_TICKS) {
-                        repeat_phase = 1;
-                        last_repeat = n;
-                        if (active_dir == -1 && selection > 0) { selection--; dirty = 1; }
-                        if (active_dir == 1 && selection < MENU_ITEMS - 1) { selection++; dirty = 1; }
-                    }
-                } else {
-                    if (n - last_repeat >= REPEAT_TICKS) {
-                        last_repeat += REPEAT_TICKS;
-                        if (active_dir == -1 && selection > 0) { selection--; dirty = 1; }
-                        if (active_dir == 1 && selection < MENU_ITEMS - 1) { selection++; dirty = 1; }
-                    }
-                }
-            }
-        }
-
-        prev_up    = pad.up;
-        prev_down  = pad.down;
-        prev_a     = pad.a;
-        prev_logo  = pad.logo;
-        ls_up_prev = ls_up;
-        ls_down_prev = ls_down;
+        prev_nav_up   = pad.up || ls_up;
+        prev_nav_down = pad.down || ls_down;
+        prev_a        = pad.a;
+        prev_logo     = pad.logo;
 
         if (dirty) {
             for (int i = 0; i < MENU_ITEMS; i++) {
@@ -301,9 +247,9 @@ static int run_guide_menu(const GfxCtx *gfx)
 
             char navbuf[80];
             int ny = dy + 22;
-            snprintf(navbuf, sizeof(navbuf), "sel:%d wU:%d wD:%d aD:%d rp:%d pu:%d pd:%d",
-                     selection, want_up, want_down, active_dir, repeat_phase,
-                     prev_up, prev_down);
+            snprintf(navbuf, sizeof(navbuf), "sel:%d up:%d dn:%d lu:%d ld:%d pnu:%d pnd:%d",
+                     selection, pad.up, pad.down, ls_up, ls_down,
+                     prev_nav_up, prev_nav_down);
             gfx_fill_rect(gfx, 8, ny - 2, BLADE_W - 16, 20, PAL_BLADE_BG);
             gfx_draw_str(gfx, 16, ny, navbuf, PAL_TEXT_HINT, 0, 0);
 
