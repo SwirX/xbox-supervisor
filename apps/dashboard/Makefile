@@ -19,7 +19,7 @@ OBJS      := $(ASM_SRCS:.S=.o) $(C_SRCS:.c=.o)
 
 .PHONY: all clean
 
-all: dashboard.elf32
+all: app.elf dashboard.elf32
 
 %.o: %.S
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -36,5 +36,8 @@ dashboard.elf32: dashboard.elf
 	$(STRIP) $@
 	ls -lh $@
 
+app.elf: dashboard.elf32
+	cp $< $@
+
 clean:
-	rm -f $(OBJS) dashboard.elf dashboard.elf32 dashboard.map
+	rm -f $(OBJS) dashboard.elf dashboard.elf32 app.elf dashboard.map

@@ -273,35 +273,47 @@ static int run_guide_menu(const GfxCtx *gfx)
     }
 }
 
-static int load_guest_from_usb(ElfExecPayload *out)
+#define MAX_APPS 32
+
+typedef struct {
+    char id[48];
+    char name[64];
+    char author[64];
+    uint32_t version;
+} AppMeta;
+
+static AppMeta app_cache[MAX_APPS];
+static int app_count;
+
+static int load_guest_file(const char *path, ElfExecPayload *out)
 {
-    FILE *f = fopen("uda:/payload.elf", "rb");
+    FILE *f = fopen(path, "rb");
     if (!f) {
-        printf("\n  No payload.elf on USB.\n");
+        printf("\n  Cannot open %s.\n", path);
         return -1;
     }
 
     Elf32_Ehdr ehdr;
     if (fread(&ehdr, 1, sizeof(ehdr), f) != sizeof(ehdr)) {
-        printf("\n  Bad ELF header.\n");
+        printf("\n  Bad ELF header in %s.\n", path);
         fclose(f);
         return -1;
     }
 
     if (ehdr.e_ident[0] != ELFMAG0 || ehdr.e_ident[1] != ELFMAG1 ||
         ehdr.e_ident[2] != ELFMAG2 || ehdr.e_ident[3] != ELFMAG3) {
-        printf("\n  Not an ELF file.\n");
+        printf("\n  Not an ELF file: %s.\n", path);
         fclose(f);
         return -1;
     }
 
     if (ehdr.e_machine != EM_PPC) {
-        printf("\n  Not PowerPC ELF.\n");
+        printf("\n  Not PowerPC ELF: %s.\n", path);
         fclose(f);
         return -1;
     }
 
-    printf("\n  Loading %s...\n", "payload.elf");
+    printf("\n  Loading %s...\n", path);
 
     Elf32_Phdr *phdrs = malloc(ehdr.e_phnum * sizeof(Elf32_Phdr));
     if (!phdrs) {
@@ -370,6 +382,24 @@ static int load_guest_from_usb(ElfExecPayload *out)
     return 0;
 }
 
+static int load_guest_from_usb(ElfExecPayload *out)
+{
+    return load_guest_file("uda:/payload.elf", out);
+}
+
+static int launch_app_by_id(const char *app_id, ElfExecPayload *out)
+{
+    for (int i = 0; i < app_count; i++) {
+        if (strcmp(app_cache[i].id, app_id) == 0) {
+            char path[320];
+            snprintf(path, sizeof(path), "uda:/apps/%.47s/app.elf", app_cache[i].id);
+            return load_guest_file(path, out);
+        }
+    }
+    printf("[LAUNCH] App '%s' not found in cache.\n", app_id);
+    return -1;
+}
+
 static void send_exec_guest(ElfExecPayload *payload)
 {
     IpcPacket cmd;
@@ -387,18 +417,6 @@ static void execute_exit_to_xell(void)
     udelay(500000);
     xenon_smc_power_reboot();
 }
-
-#define MAX_APPS 32
-
-typedef struct {
-    char id[48];
-    char name[64];
-    char author[64];
-    uint32_t version;
-} AppMeta;
-
-static AppMeta app_cache[MAX_APPS];
-static int app_count;
 
 static void push_response(uint32_t seq, uint32_t cmd, const void *payload, uint32_t len)
 {
@@ -737,8 +755,16 @@ void main(void)
     fatInitDefault();
     scan_apps();
 
-    printf("[SUPV] Ready. Press Guide for menu.\n");
-
     ElfExecPayload usb_payload;
+    memset(&usb_payload, 0, sizeof(usb_payload));
+
+    if (launch_app_by_id("xenolith.dashboard", &usb_payload) == 0) {
+        printf("[SUPV] Launching Dashboard...\n");
+        clear_vfb();
+        gfx_flush(&gfx_sv);
+        send_exec_guest(&usb_payload);
+    }
+
+    printf("[SUPV] Ready. Press Guide for menu.\n");
     service_loop(&gfx_sv, &usb_payload);
 }
