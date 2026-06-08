@@ -117,7 +117,7 @@ static inline void gfx_inval(const GfxCtx *ctx)
     uint32_t p = base & ~0x7F;
     uint32_t end = base + size;
     while (p < end) {
-        __asm__ volatile("dcbi 0, %0" : : "r"(p) : "memory");
+        __asm__ volatile("dcbf 0, %0" : : "r"(p) : "memory");
         p += 128;
     }
     __asm__ volatile("sync" : : : "memory");
