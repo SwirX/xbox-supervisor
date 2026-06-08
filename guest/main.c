@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <input/input.h>
 #include <gfx.h>
+#include <xenos/xenos.h>
 
 #define IPC_INPUT_GEN    ((volatile uint32_t *)0x807FFCFCUL)
 #define IPC_SHARED_PAD ((volatile uint32_t *)0x807FFD00UL)
@@ -19,71 +20,83 @@ static struct controller_data_s read_pad(void)
     return pad;
 }
 
+static void wait_a_released(void)
+{
+    struct controller_data_s pad;
+    do { pad = read_pad(); } while (pad.a);
+}
+
+static void wait_a_pressed(void)
+{
+    struct controller_data_s pad;
+    do { pad = read_pad(); } while (!pad.a);
+}
+
 int main(void)
 {
     GfxCtx gfx;
     gfx_init(&gfx);
 
-    uint32_t bg = 0x202025FF;
+    /* ── Test 1: Full-screen colors ── */
 
-    gfx_clear(&gfx, bg);
-    gfx_draw_str(&gfx, 20, 10, "GUEST DASHBOARD", 0xFFFFFFFF, bg, 200);
+    /* RED */
+    gfx_clear(&gfx, 0xFF0000FF);
     gfx_flush(&gfx);
+    wait_a_released();
+    wait_a_pressed();
+
+    /* GREEN */
+    gfx_clear(&gfx, 0x00FF00FF);
+    gfx_flush(&gfx);
+    wait_a_released();
+    wait_a_pressed();
+
+    /* BLUE */
+    gfx_clear(&gfx, 0x0000FFFF);
+    gfx_flush(&gfx);
+    wait_a_released();
+    wait_a_pressed();
+
+    /* ── Test 2: Static "HELLO" once, never redraw ── */
+
+    gfx_clear(&gfx, 0x202025FF);
+    gfx_draw_str(&gfx, 20, 10, "HELLO", 0xFFFFFFFF, 0x202025FF, 200);
+    gfx_flush(&gfx);
+
+    /* Spin forever — no framebuffer writes */
+    while (1) {
+        struct controller_data_s pad = read_pad();
+        if (pad.logo) break;
+        __asm__ volatile("or 27, 27, 27");
+    }
+
+    /* ── Test 3: Solid rectangle every frame ── */
+
+    wait_a_released();
+    wait_a_pressed();
 
     while (1) {
         struct controller_data_s pad = read_pad();
 
-        int y = 40;
-        uint32_t g = 0x4488CCFF, w = 0xFFFFFFFF;
+        gfx_clear(&gfx, 0x202025FF);
 
-        gfx_draw_str(&gfx, 20, y,    "A:",   g, bg, 32);
-        gfx_draw_str(&gfx, 44, y,    pad.a ? "1" : "0", pad.a ? w : 0x444444FF, bg, 16);
-        gfx_draw_str(&gfx, 90, y,    "B:",   g, bg, 32);
-        gfx_draw_str(&gfx, 114, y,   pad.b ? "1" : "0", pad.b ? w : 0x444444FF, bg, 16);
-        gfx_draw_str(&gfx, 150, y,   "X:",   g, bg, 32);
-        gfx_draw_str(&gfx, 174, y,   pad.x ? "1" : "0", pad.x ? w : 0x444444FF, bg, 16);
-        gfx_draw_str(&gfx, 210, y,   "Y:",   g, bg, 32);
-        gfx_draw_str(&gfx, 234, y,   pad.y ? "1" : "0", pad.y ? w : 0x444444FF, bg, 16);
+        /* Draw four coloured rectangles covering different regions */
+        for (int y = 0; y < 720; y += 4)
+            for (int x = 0; x < 640; x += 4)
+                gfx.fb[gfx_tile_idx(x, y, gfx.stride)] = 0xFF0000FF;
 
-        y += 20;
+        for (int y = 0; y < 720; y += 4)
+            for (int x = 640; x < 1280; x += 4)
+                gfx.fb[gfx_tile_idx(x, y, gfx.stride)] = 0x00FF00FF;
 
-        gfx_draw_str(&gfx, 300, y,   "LB:",  g, bg, 32);
-        gfx_draw_str(&gfx, 340, y,   pad.lb ? "1" : "0", pad.lb ? w : 0x444444FF, bg, 16);
-        gfx_draw_str(&gfx, 390, y,   "RB:",  g, bg, 32);
-        gfx_draw_str(&gfx, 430, y,   pad.rb ? "1" : "0", pad.rb ? w : 0x444444FF, bg, 16);
-
-        y += 20;
-
-        gfx_draw_str(&gfx, 300, y,   "UP:",  g, bg, 32);
-        gfx_draw_str(&gfx, 340, y,   pad.up ? "1" : "0", pad.up ? w : 0x444444FF, bg, 16);
-        gfx_draw_str(&gfx, 390, y,   "DN:",  g, bg, 32);
-        gfx_draw_str(&gfx, 430, y,   pad.down ? "1" : "0", pad.down ? w : 0x444444FF, bg, 16);
-
-        y += 20;
-        gfx_draw_str(&gfx, 20, y,    "LT:",  g, bg, 32);
-        gfx_draw_int(&gfx, 56, y, pad.lt, w, bg);
-        gfx_draw_str(&gfx, 150, y,   "RT:",  g, bg, 32);
-        gfx_draw_int(&gfx, 186, y, pad.rt, w, bg);
-
-        y += 20;
-        gfx_draw_str(&gfx, 20, y,    "LX:",  g, bg, 32);
-        gfx_draw_int(&gfx, 56, y, pad.s1_x, w, bg);
-        gfx_draw_str(&gfx, 200, y,   "LY:",  g, bg, 32);
-        gfx_draw_int(&gfx, 236, y, pad.s1_y, w, bg);
-
-        y += 20;
-        gfx_draw_str(&gfx, 20, y,    "RX:",  g, bg, 32);
-        gfx_draw_int(&gfx, 56, y, pad.s2_x, w, bg);
-        gfx_draw_str(&gfx, 200, y,   "RY:",  g, bg, 32);
-        gfx_draw_int(&gfx, 236, y, pad.s2_y, w, bg);
-
-        y += 30;
-        gfx_draw_str(&gfx, 20, y,    "GUIDE=exit", 0x44CC88FF, bg, 100);
+        for (int y = 360; y < 720; y += 4)
+            for (int x = 0; x < 640; x += 4)
+                gfx.fb[gfx_tile_idx(x, y, gfx.stride)] = 0x0000FFFF;
 
         gfx_flush(&gfx);
 
-        if (pad.logo)
-            break;
+        if (pad.logo) break;
+        __asm__ volatile("or 27, 27, 27");
     }
 
     gfx_clear(&gfx, 0x000044FF);
