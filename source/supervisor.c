@@ -29,14 +29,14 @@ extern void core1_process_engine(void);
 #define CACHE_LINE_SIZE   128
 #define BLADE_W           320
 
-/* ── Color palette (no blue shades) ── */
-#define PAL_BLADE_BG     0xBB101010
-#define PAL_STRIP_BG     0xFF1A1A1A
-#define PAL_ACCENT       0xFF00FF66
+/* ── Color palette — RGBA byte order (Byte0=R, Byte1=G, Byte2=B, Byte3=A) ── */
+#define PAL_BLADE_BG     0x101010BB
+#define PAL_STRIP_BG     0x1A1A1AFF
+#define PAL_ACCENT       0x00FF66FF
 #define PAL_TEXT_SEL     0xFFFFFFFF
-#define PAL_TEXT_UNSEL   0xFF888888
-#define PAL_TEXT_HINT    0xFF666666
-#define PAL_RTC          0xFF00FF66
+#define PAL_TEXT_UNSEL   0x888888FF
+#define PAL_TEXT_HINT    0x666666FF
+#define PAL_RTC          0x00FF66FF
 
 /* ── Clock overlay region (top-right, outside blade) ── */
 #define CLOCK_SX         1100
@@ -200,8 +200,8 @@ static int run_guide_menu(const GfxCtx *gfx)
                         clock_backup[row * CLOCK_SW + col];
             draw_clock(gfx);
             {
-                uint32_t b = (uint32_t)gfx->fb + CLOCK_SY * gfx->stride * 4;
-                uint32_t e = b + CLOCK_SH * gfx->stride * 4;
+                uint32_t b = (uint32_t)gfx->fb + CLOCK_SY * gfx->stride * gfx->bpp;
+                uint32_t e = b + CLOCK_SH * gfx->stride * gfx->bpp;
                 for (uint32_t p = b & ~0x7F; p < e; p += 128)
                     __asm__ volatile("dcbf 0, %0" : : "r"(p) : "memory");
                 __asm__ volatile("sync" : : : "memory");
@@ -435,7 +435,7 @@ static void service_loop(GfxCtx *gfx, ElfExecPayload *usb_payload)
                                 send_exec_guest(usb_payload);
                             }
                             signal_resume(flags);
-                            gfx_clear(gfx, 0xFF000000);
+                            gfx_clear(gfx, 0x000000FF);
                             gfx_flush(gfx);
                         } else if (result == 3) {
                             execute_exit_to_xell();

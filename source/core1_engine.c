@@ -8,6 +8,12 @@ extern void core1_guest_entry(ElfExecPayload *payload);
 
 static void handle_pause(volatile IpcStateFlags *flags)
 {
+    volatile FbInfo *fbi = (volatile FbInfo *)IPC_FB_INFO_ADDR;
+    uint32_t fb_end = fbi->base + fbi->stride * fbi->height * fbi->bpp;
+    for (uint32_t p = fbi->base & ~0x7F; p < fb_end; p += 128)
+        __asm__ volatile("dcbf 0, %0" : : "r"(p) : "memory");
+    __asm__ volatile("sync" : : : "memory");
+
     flags->in.current_state = STATE_PAUSED;
     cache_flush_range(&flags->in.current_state, sizeof(uint32_t));
     ppc_sync();

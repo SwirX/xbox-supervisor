@@ -93,16 +93,16 @@ static inline void gfx_draw_int(const GfxCtx *ctx, int x, int y, int val,
 
 static inline uint32_t gfx_pack_color(uint8_t r, uint8_t g, uint8_t b)
 {
-    return (0xFF << 24) | (r << 16) | (g << 8) | b;
+    return (r << 24) | (g << 16) | (b << 8) | 0xFF;
 }
 
 static inline uint32_t gfx_alpha_blend(uint32_t src, uint32_t dst, uint8_t a)
 {
     uint8_t inv = 255 - a;
-    uint8_t r = (((src >> 16) & 0xFF) * a + ((dst >> 16) & 0xFF) * inv) / 255;
-    uint8_t g = (((src >> 8) & 0xFF) * a + ((dst >> 8) & 0xFF) * inv) / 255;
-    uint8_t b = ((src & 0xFF) * a + (dst & 0xFF) * inv) / 255;
-    return (0xFF << 24) | (r << 16) | (g << 8) | b;
+    uint8_t r = (((src >> 24) & 0xFF) * a + ((dst >> 24) & 0xFF) * inv) / 255;
+    uint8_t g = (((src >> 16) & 0xFF) * a + ((dst >> 16) & 0xFF) * inv) / 255;
+    uint8_t b = (((src >> 8) & 0xFF) * a + ((dst >> 8) & 0xFF) * inv) / 255;
+    return (r << 24) | (g << 16) | (b << 8) | 0xFF;
 }
 
 static inline void gfx_fill_rect_alpha(const GfxCtx *ctx, int x, int y, int w, int h,
