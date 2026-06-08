@@ -79,6 +79,7 @@ int main(void)
     if (wait_a_pressed() < 0) return 1;
 
     /* ── Test 3: Solid rectangle every frame ── */
+    if (wait_a_released() < 0) return 1;
 
     while (1) {
         struct controller_data_s pad = read_pad();
