@@ -21,6 +21,13 @@ static struct controller_data_s read_pad(void)
     return pad;
 }
 
+static void vfb_present(void)
+{
+    __asm__ volatile("sync" : : : "memory");
+    *VFB_DIRTY_ADDR = 1;
+    __asm__ volatile("sync" : : : "memory");
+}
+
 static int should_exit(void)
 {
     __asm__ volatile("dcbf 0, %0; sync; isync" : : "r"(IPC_FLAGS_ADDR) : "memory");
@@ -55,17 +62,17 @@ int main(void)
     /* ── Test 1: Full-screen colors ── */
 
     gfx_clear(&gfx, 0xFF0000FF);
-    gfx_flush(&gfx);
+    gfx_flush(&gfx); vfb_present();
     if (wait_a_released() < 0) return 1;
     if (wait_a_pressed() < 0) return 1;
 
     gfx_clear(&gfx, 0x00FF00FF);
-    gfx_flush(&gfx);
+    gfx_flush(&gfx); vfb_present();
     if (wait_a_released() < 0) return 1;
     if (wait_a_pressed() < 0) return 1;
 
     gfx_clear(&gfx, 0x0000FFFF);
-    gfx_flush(&gfx);
+    gfx_flush(&gfx); vfb_present();
     if (wait_a_released() < 0) return 1;
     if (wait_a_pressed() < 0) return 1;
 
@@ -73,7 +80,7 @@ int main(void)
 
     gfx_clear(&gfx, 0x202025FF);
     gfx_draw_str(&gfx, 20, 10, "HELLO", 0xFFFFFFFF, 0x202025FF, 200);
-    gfx_flush(&gfx);
+    gfx_flush(&gfx); vfb_present();
 
     if (wait_a_released() < 0) return 1;
     if (wait_a_pressed() < 0) return 1;
@@ -100,7 +107,7 @@ int main(void)
             for (int x = 0; x < 640; x += 4)
                 gfx.fb[gfx_tile_idx(x, y, gfx.stride)] = 0x0000FFFF;
 
-        gfx_flush(&gfx);
+        gfx_flush(&gfx); vfb_present();
 
         if (pad.a) break;
         __asm__ volatile("or 27, 27, 27");
@@ -108,7 +115,7 @@ int main(void)
 
     gfx_clear(&gfx, 0x000044FF);
     gfx_draw_str(&gfx, 20, 40, "EXITED", 0xFFFFFFFF, 0x000044FF, 100);
-    gfx_flush(&gfx);
+    gfx_flush(&gfx); vfb_present();
 
     return 0;
 }

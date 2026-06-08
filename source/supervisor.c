@@ -383,6 +383,28 @@ static void execute_exit_to_xell(void)
     xenon_smc_power_reboot();
 }
 
+static void composite_vfb(const GfxCtx *gfx)
+{
+    if (*VFB_DIRTY_ADDR == 0)
+        return;
+
+    uint32_t *vfb = (uint32_t *)VFB_BASE;
+    uint32_t count = gfx->stride * gfx->height;
+    for (uint32_t i = 0; i < count; i++)
+        gfx->fb[i] = vfb[i];
+
+    gfx_flush(gfx);
+
+    *VFB_DIRTY_ADDR = 0;
+    __asm__ volatile("sync" : : : "memory");
+}
+
+static void clear_vfb(void)
+{
+    memset((void *)VFB_BASE, 0, 1280 * 720 * 4);
+    __asm__ volatile("sync" : : : "memory");
+}
+
 static void service_loop(GfxCtx *gfx, ElfExecPayload *usb_payload)
 {
     int menu_open = 0;
@@ -438,12 +460,12 @@ static void service_loop(GfxCtx *gfx, ElfExecPayload *usb_payload)
 
                     if (result == 0) {
                         /* resume */
-                    } else if (result == 1) {
+                    } else                     if (result == 1) {
                         if (load_guest_from_usb(usb_payload) == 0) {
                             update_pads_and_gen();
                             send_exec_guest(usb_payload);
                         }
-                        gfx_clear(gfx, 0x000000FF);
+                        clear_vfb();
                         gfx_flush(gfx);
                     } else if (result == 3) {
                         execute_exit_to_xell();
@@ -460,6 +482,8 @@ static void service_loop(GfxCtx *gfx, ElfExecPayload *usb_payload)
         __asm__ volatile("eieio" : : : "memory");
         *IPC_INPUT_GEN_ADDR = *IPC_INPUT_GEN_ADDR + 1;
         __asm__ volatile("sync" : : : "memory");
+
+        composite_vfb(gfx);
 
         __asm__ volatile("or 27, 27, 27");
     }
@@ -480,22 +504,35 @@ void main(void)
 
     supervisor_early_init();
 
+    uint32_t real_fb_base;
+    uint32_t fb_w, fb_h, fb_stride;
     {
         volatile uint32_t *ati = (volatile uint32_t *)0xEC806100UL;
+        real_fb_base = ati[4] | 0x80000000UL;
+        fb_w    = ati[13];
+        fb_h    = ati[14];
+        fb_stride = ((fb_w + 31) >> 5) << 5;
+    }
+
+    {
         volatile FbInfo *fbi = (volatile FbInfo *)IPC_FB_INFO_ADDR;
-        uint32_t base = ati[4] | 0x80000000UL;
-        uint32_t w    = ati[13];
-        uint32_t h    = ati[14];
-        fbi->base   = base;
-        fbi->width  = w;
-        fbi->height = h;
-        fbi->stride = ((w + 31) >> 5) << 5;
+        fbi->base   = VFB_BASE;
+        fbi->width  = fb_w;
+        fbi->height = fb_h;
+        fbi->stride = fb_stride;
         fbi->bpp    = 4;
         cache_flush_range((void *)fbi, sizeof(FbInfo));
     }
 
     GfxCtx gfx_sv;
-    gfx_init(&gfx_sv);
+    gfx_sv.fb     = (uint32_t *)real_fb_base;
+    gfx_sv.width  = (int)fb_w;
+    gfx_sv.height = (int)fb_h;
+    gfx_sv.stride = (int)fb_stride;
+    gfx_sv.bpp    = 4;
+
+    *VFB_DIRTY_ADDR = 0;
+    __asm__ volatile("sync" : : : "memory");
 
     boot_core1();
 
