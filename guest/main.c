@@ -63,24 +63,17 @@ int main(void)
     gfx_draw_str(&gfx, 20, 10, "HELLO", 0xFFFFFFFF, 0x202025FF, 200);
     gfx_flush(&gfx);
 
-    /* Spin forever — no framebuffer writes */
-    while (1) {
-        struct controller_data_s pad = read_pad();
-        if (pad.logo) break;
-        __asm__ volatile("or 27, 27, 27");
-    }
-
-    /* ── Test 3: Solid rectangle every frame ── */
-
+    /* Spin — no framebuffer writes, wait for A to advance */
     wait_a_released();
     wait_a_pressed();
+
+    /* ── Test 3: Solid rectangle every frame ── */
 
     while (1) {
         struct controller_data_s pad = read_pad();
 
         gfx_clear(&gfx, 0x202025FF);
 
-        /* Draw four coloured rectangles covering different regions */
         for (int y = 0; y < 720; y += 4)
             for (int x = 0; x < 640; x += 4)
                 gfx.fb[gfx_tile_idx(x, y, gfx.stride)] = 0xFF0000FF;
@@ -95,7 +88,7 @@ int main(void)
 
         gfx_flush(&gfx);
 
-        if (pad.logo) break;
+        if (pad.a) break;
         __asm__ volatile("or 27, 27, 27");
     }
 
