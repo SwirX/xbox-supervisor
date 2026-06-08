@@ -26,6 +26,7 @@ extern void core1_process_engine(void);
 #define MENU_ITEMS        4
 #define GUEST_BASE        0x81000000UL
 #define CACHE_LINE_SIZE   128
+#define BLADE_W           360
 
 static const char *menu_labels[MENU_ITEMS] = {
     "Resume Game",
@@ -56,12 +57,6 @@ static void supervisor_early_init(void)
     IPC_FLAGS_ADDR->out.supervisor_status = STATE_INIT;
     IPC_FLAGS_ADDR->in.current_state      = STATE_INIT;
     cache_flush_range((void *)IPC_SHMEM_BASE, IPC_SHMEM_SIZE);
-}
-
-static void fill_fb_black(const GfxCtx *gfx)
-{
-    gfx_clear(gfx, 0xFF000000);
-    __asm__ volatile("sync" : : : "memory");
 }
 
 static void update_pads_and_gen(void)
@@ -103,23 +98,7 @@ static void signal_resume(volatile IpcStateFlags *flags)
     }
 }
 
-static void draw_menu(int selection)
-{
-    console_clrscr();
-    printf("\n  GUIDE MENU\n");
-    printf("  ==========\n\n");
-
-    for (int i = 0; i < MENU_ITEMS; i++) {
-        if (i == selection)
-            printf("  > %s\n", menu_labels[i]);
-        else
-            printf("    %s\n", menu_labels[i]);
-    }
-
-    printf("\n  A=Select  Guide=Close\n");
-}
-
-static int handle_menu_input(void)
+static int run_guide_menu(const GfxCtx *gfx)
 {
     int any_held = 1;
     while (any_held) {
@@ -133,6 +112,15 @@ static int handle_menu_input(void)
         }
     }
 
+    uint32_t *saved = gfx_save_region(gfx, 0, 0, BLADE_W, gfx->height);
+    if (!saved)
+        return -1;
+
+    gfx_fill_rect_alpha(gfx, 0, 0, BLADE_W, gfx->height, 0xBB101010, 187);
+    gfx_fill_rect(gfx, BLADE_W - 1, 0, 1, gfx->height, 0xFF4488CC);
+    gfx_fill_rect(gfx, 16, 28, BLADE_W - 32, 1, 0xFF4488CC);
+    gfx_draw_str(gfx, 16, 12, "MENU", 0xFF4488CC, 0, 0);
+
     int selection = 0;
     int prev_up = 0, prev_down = 0, prev_logo = 0, prev_a = 0;
     int dirty = 1;
@@ -140,12 +128,38 @@ static int handle_menu_input(void)
     while (1) {
         usb_do_poll();
 
+        if (dirty) {
+            gfx_fill_rect_alpha(gfx, 0, 0, BLADE_W, gfx->height, 0xBB101010, 187);
+            gfx_fill_rect(gfx, BLADE_W - 1, 0, 1, gfx->height, 0xFF4488CC);
+            gfx_fill_rect(gfx, 16, 28, BLADE_W - 32, 1, 0xFF4488CC);
+            gfx_draw_str(gfx, 16, 12, "MENU", 0xFF4488CC, 0, 0);
+
+            for (int i = 0; i < MENU_ITEMS; i++) {
+                int item_y = 40 + i * 28;
+                if (i == selection) {
+                    gfx_fill_rect_alpha(gfx, 8, item_y - 2, BLADE_W - 16, 20, 0x664488CC, 102);
+                    gfx_draw_str(gfx, 16, item_y, menu_labels[i], 0xFFFFFFFF, 0, 0);
+                } else {
+                    gfx_draw_str(gfx, 16, item_y, menu_labels[i], 0xFF888888, 0, 0);
+                }
+            }
+
+            gfx_draw_str(gfx, 16, 40 + MENU_ITEMS * 28 + 8,
+                         "A=Select  Guide=Close", 0xFF666666, 0, 0);
+
+            dirty = 0;
+        }
+
         for (int port = 0; port < NUM_CONTROLLERS; port++) {
             struct controller_data_s pad;
             get_controller_data(&pad, port);
 
-            if (pad.logo && !prev_logo)
+            if (pad.logo && !prev_logo) {
+                gfx_restore_region(gfx, 0, 0, saved, BLADE_W, gfx->height);
+                gfx_flush(gfx);
+                free(saved);
                 return -1;
+            }
 
             if (pad.up && !prev_up && selection > 0) {
                 selection--;
@@ -158,18 +172,17 @@ static int handle_menu_input(void)
                 udelay(50000);
             }
 
-            if (pad.a && !prev_a)
+            if (pad.a && !prev_a) {
+                gfx_restore_region(gfx, 0, 0, saved, BLADE_W, gfx->height);
+                gfx_flush(gfx);
+                free(saved);
                 return selection;
+            }
 
             prev_up    = pad.up;
             prev_down  = pad.down;
             prev_a     = pad.a;
             prev_logo  = pad.logo;
-        }
-
-        if (dirty) {
-            draw_menu(selection);
-            dirty = 0;
         }
 
         __asm__ volatile("or 27, 27, 27");
@@ -377,22 +390,18 @@ void main(void)
                     signal_pause(flags);
                     if (flags->in.current_state == STATE_PAUSED) {
                         menu_open = 1;
-                        int result = handle_menu_input();
+                        int result = run_guide_menu(&gfx_sv);
 
                         if (result == 0) {
                             signal_resume(flags);
-                            fill_fb_black(&gfx_sv);
-                            console_clrscr();
-                            printf("\n[SUPV] Core 1 resumed.\n");
                         } else if (result == 1) {
                             if (load_guest_from_usb(&usb_payload) == 0) {
                                 update_pads_and_gen();
                                 send_exec_guest(&usb_payload);
                             }
                             signal_resume(flags);
-                            fill_fb_black(&gfx_sv);
-                            console_clrscr();
-                            printf("\n  Guest loaded. Press Guide for menu.\n");
+                            gfx_clear(&gfx_sv, 0xFF000000);
+                            gfx_flush(&gfx_sv);
                         } else if (result == 3) {
                             execute_exit_to_xell();
                         }

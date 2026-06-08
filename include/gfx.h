@@ -2,6 +2,7 @@
 #define GFX_H
 
 #include <stdint.h>
+#include <stdlib.h>
 #include "system_memory_map.h"
 
 typedef struct {
@@ -88,6 +89,43 @@ static inline void gfx_draw_int(const GfxCtx *ctx, int x, int y, int val,
         char t = *a; *a = *b; *b = t;
     }
     gfx_draw_str(ctx, x, y, buf, fg, bg, 48);
+}
+
+static inline uint32_t gfx_alpha_blend(uint32_t src, uint32_t dst, uint8_t a)
+{
+    uint8_t inv = 255 - a;
+    uint8_t r = (((src >> 16) & 0xFF) * a + ((dst >> 16) & 0xFF) * inv) / 255;
+    uint8_t g = (((src >> 8) & 0xFF) * a + ((dst >> 8) & 0xFF) * inv) / 255;
+    uint8_t b = ((src & 0xFF) * a + (dst & 0xFF) * inv) / 255;
+    return (0xFF << 24) | (r << 16) | (g << 8) | b;
+}
+
+static inline void gfx_fill_rect_alpha(const GfxCtx *ctx, int x, int y, int w, int h,
+                                        uint32_t color, uint8_t alpha)
+{
+    for (int row = y; row < y + h && row < ctx->height; row++)
+        for (int col = x; col < x + w && col < ctx->width; col++) {
+            int i = gfx_tile_idx(col, row, ctx->stride);
+            ctx->fb[i] = gfx_alpha_blend(color, ctx->fb[i], alpha);
+        }
+}
+
+static inline uint32_t *gfx_save_region(const GfxCtx *ctx, int x, int y, int w, int h)
+{
+    uint32_t *buf = (uint32_t *)malloc(w * h * sizeof(uint32_t));
+    if (!buf) return NULL;
+    for (int row = 0; row < h && row < ctx->height; row++)
+        for (int col = 0; col < w && col < ctx->width; col++)
+            buf[row * w + col] = ctx->fb[gfx_tile_idx(x + col, y + row, ctx->stride)];
+    return buf;
+}
+
+static inline void gfx_restore_region(const GfxCtx *ctx, int x, int y,
+                                       const uint32_t *data, int w, int h)
+{
+    for (int row = 0; row < h && row < ctx->height; row++)
+        for (int col = 0; col < w && col < ctx->width; col++)
+            ctx->fb[gfx_tile_idx(x + col, y + row, ctx->stride)] = data[row * w + col];
 }
 
 static inline void gfx_flush(const GfxCtx *ctx)
