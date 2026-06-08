@@ -5,7 +5,7 @@ CFLAGS    := -O2 -Wall -DXENON -m32 -maltivec -fno-pic -mpowerpc64 -mhard-float
 CFLAGS    += -mcpu=cell -mtune=cell
 CFLAGS    += -I../include -I/usr/local/xenon/usr/include
 
-SRCS      := init.c present.c svc_send.c svc_notify.c input.c xl_ticks.c stubs.c
+SRCS      := init.c present.c svc_send.c svc_notify.c input.c xl_ticks.c stubs.c svc_app.c
 EXT_SRCS  := ../source/ipc_ring.c
 OBJS      := $(SRCS:.c=.o) $(EXT_SRCS:../source/%.c=%.o)
 LIB       := libxenolith.a

@@ -99,6 +99,8 @@ typedef struct {
 #define SVC_SHUTDOWN      0x24
 #define SVC_GET_SETTING   0x26
 #define SVC_SET_SETTING   0x27
+#define SVC_GET_APP_COUNT 0x28
+#define SVC_GET_APP_INFO  0x29
 
 #define MAX_SERVICE_CALLS_PER_TICK 8
 

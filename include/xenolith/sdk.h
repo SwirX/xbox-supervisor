@@ -20,4 +20,10 @@ int     svc_set_setting(const char *key, const char *value);
 int     xl_input_read(struct controller_data_s *pad);
 uint64_t xl_get_ticks(void);
 
+int     svc_send(uint32_t cmd, const void *req, uint32_t req_len,
+                  void *resp, uint32_t resp_len);
+
+int     svc_get_app_count(void);
+int     svc_get_app_name(int idx, char *buf, int buf_len);
+
 #endif

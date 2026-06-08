@@ -388,6 +388,31 @@ static void execute_exit_to_xell(void)
     xenon_smc_power_reboot();
 }
 
+#define MAX_APPS 32
+
+typedef struct {
+    char id[48];
+    char name[64];
+    char author[64];
+    uint32_t version;
+} AppMeta;
+
+static AppMeta app_cache[MAX_APPS];
+static int app_count;
+
+static void push_response(uint32_t seq, uint32_t cmd, const void *payload, uint32_t len)
+{
+    IpcPacket resp;
+    resp.cmd_type    = cmd;
+    resp.sequence_id = seq;
+    memset(resp.payload, 0, PACKET_PAYLOAD_SIZE);
+    if (payload && len > 0) {
+        uint32_t cp = len < PACKET_PAYLOAD_SIZE ? len : PACKET_PAYLOAD_SIZE;
+        memcpy(resp.payload, payload, cp);
+    }
+    ipc_ring_push((IpcRingBuffer *)IPC_CMD_RING_ADDR, &resp);
+}
+
 static void dispatch_packet(IpcPacket *pkt)
 {
     switch (pkt->cmd_type) {
@@ -395,6 +420,30 @@ static void dispatch_packet(IpcPacket *pkt)
         strncpy(notif_text, (char *)pkt->payload, sizeof(notif_text) - 1);
         notif_text[sizeof(notif_text) - 1] = '\0';
         notif_expire = time(NULL) + 4;
+        break;
+    }
+    case SVC_GET_APP_COUNT: {
+        int32_t count = app_count;
+        push_response(pkt->sequence_id, pkt->cmd_type, &count, sizeof(count));
+        break;
+    }
+    case SVC_GET_APP_INFO: {
+        int32_t idx = 0;
+        memcpy(&idx, pkt->payload, sizeof(idx));
+        struct {
+            int32_t total;
+            int32_t index;
+            char name[48];
+        } r;
+        memset(&r, 0, sizeof(r));
+        r.total = app_count;
+        r.index = idx;
+        if (idx >= 0 && idx < app_count) {
+            size_t n = strlen(app_cache[idx].name);
+            if (n > sizeof(r.name) - 1) n = sizeof(r.name) - 1;
+            memcpy(r.name, app_cache[idx].name, n);
+        }
+        push_response(pkt->sequence_id, pkt->cmd_type, &r, sizeof(r));
         break;
     }
     default:
@@ -449,18 +498,6 @@ static void clear_vfb(void)
     memset((void *)VFB_BASE, 0, 1280 * 720 * 4);
     __asm__ volatile("sync" : : : "memory");
 }
-
-#define MAX_APPS 32
-
-typedef struct {
-    char id[48];
-    char name[64];
-    char author[64];
-    uint32_t version;
-} AppMeta;
-
-static AppMeta app_cache[MAX_APPS];
-static int app_count;
 
 static char *json_strval(const char *json, const char *key, char *buf, int buf_len)
 {
