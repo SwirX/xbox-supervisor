@@ -210,6 +210,7 @@ static int run_guide_menu(const GfxCtx *gfx)
         memset(&pad, 0, sizeof(pad));
         for (int port = 0; port < NUM_CONTROLLERS; port++) {
             struct controller_data_s raw;
+            memset(&raw, 0, sizeof(raw));
             get_controller_data(&raw, port);
             if (raw.logo || raw.a || raw.up || raw.down ||
                 raw.left || raw.right || raw.s1_y || raw.s1_x)
